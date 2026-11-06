@@ -1,5 +1,6 @@
 package dev.mulm.claudemobile.ui
 
+import android.app.Activity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,10 +24,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -34,6 +39,8 @@ import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import dev.mulm.claudemobile.App
 import dev.mulm.claudemobile.R
 
 /**
@@ -135,9 +142,35 @@ private fun scheme(p: ClaudePalette): ColorScheme = (if (p.dark) darkColorScheme
     errorContainer = p.danger.copy(alpha = 0.12f).compositeOver(p.bg), onErrorContainer = p.danger,
 )
 
+/** System / light / dark, chosen in Settings. */
+object ThemeMode {
+    val state = mutableStateOf(App.instance.prefs.theme)
+    fun set(mode: String) {
+        state.value = mode
+        App.instance.prefs.theme = mode
+    }
+}
+
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
-    val p = if (isSystemInDarkTheme()) DarkPalette else LightPalette
+    val mode by ThemeMode.state
+    val dark = when (mode) {
+        "light" -> false
+        "dark" -> true
+        else -> isSystemInDarkTheme()
+    }
+    val p = if (dark) DarkPalette else LightPalette
+    // Status and navigation bar icons follow the app's theme, not the system's.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
+    }
     CompositionLocalProvider(LocalClaude provides p) {
         MaterialTheme(
             colorScheme = scheme(p),

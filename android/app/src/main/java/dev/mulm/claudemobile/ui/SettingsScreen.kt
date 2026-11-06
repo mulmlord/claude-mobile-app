@@ -170,6 +170,14 @@ fun SettingsScreen(route: Route.Settings) {
                 }
             }
 
+            Section("Appearance") {
+                val theme by ThemeMode.state
+                Segmented(
+                    options = listOf("system" to "System", "light" to "Light", "dark" to "Dark"),
+                    selected = theme, enabled = true,
+                ) { ThemeMode.set(it) }
+            }
+
             Section("Keep the laptop awake") {
                 val mode = keepAwake
                 Segmented(

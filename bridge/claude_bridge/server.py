@@ -35,6 +35,7 @@ RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getu
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "claude-mobile")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 STATE_FILE = os.path.join(RUNTIME, "state.json")
+UPLOADS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "claude-mobile", "uploads")
 
 KEYS = {
     "enter": b"\r", "esc": b"\x1b", "tab": b"\t", "shift-tab": b"\x1b[Z", "backspace": b"\x7f",
@@ -98,6 +99,20 @@ def plain(md: str, n: int = 280) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# Models seen using more than 200k tokens of context have the 1M window. Learned
+# from real sessions and kept in config.json, since transcripts don't say it.
+BIG_CONTEXT_MODELS: set[str] = set()
+
+
+def context_window(t) -> int:
+    if not t:
+        return 200_000
+    if t.context_tokens > 200_000 and t.model and t.model not in BIG_CONTEXT_MODELS:
+        BIG_CONTEXT_MODELS.add(t.model)
+        save_config_key("big_context_models", sorted(BIG_CONTEXT_MODELS))
+    return 1_000_000 if t.context_tokens > 200_000 or t.model in BIG_CONTEXT_MODELS else 200_000
+
+
 class Session:
     def __init__(self, hello: dict):
         self.id: str = hello["id"]
@@ -157,6 +172,9 @@ class Session:
             "updated": self.updated, "started": self.started, "last_text": self.last_text(),
             "session_id": self.claude_session_id, "connected": self.writer is not None,
             "questions": q,
+            "context": self.transcript.context_tokens if self.transcript else 0,
+            "context_max": context_window(self.transcript),
+            "model": self.transcript.model if self.transcript else None,
         }
 
 
@@ -667,6 +685,32 @@ class Bridge:
                 self.dirty = True
         return web.json_response({"keep_awake": self.awake.mode, "awake": self.awake.active})
 
+    async def api_upload(self, request):
+        """A photo from the phone: saved on the laptop, path returned for the message."""
+        s = self.get_session(request)
+        ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(
+            request.content_type)
+        if not ext:
+            raise web.HTTPUnsupportedMediaType(text="send a JPEG, PNG, WebP or GIF")
+        data = await request.read()
+        if not data:
+            raise web.HTTPBadRequest(text="empty upload")
+        os.makedirs(UPLOADS, mode=0o700, exist_ok=True)
+        cutoff = time.time() - 14 * 86400
+        for old in glob.glob(os.path.join(UPLOADS, "*")):
+            try:
+                if os.path.getmtime(old) < cutoff:
+                    os.unlink(old)
+            except OSError:
+                pass
+        name = time.strftime("photo-%Y%m%d-%H%M%S-") + secrets.token_hex(3) + "." + ext
+        path = os.path.join(UPLOADS, name)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        log.info("upload for %s: %s (%d KB)", s.id, path, len(data) // 1024)
+        return web.json_response({"ok": True, "path": path})
+
     async def api_ws(self, request):
         ws = web.WebSocketResponse(heartbeat=25)
         await ws.prepare(request)
@@ -711,6 +755,7 @@ class Bridge:
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config()
+    BIG_CONTEXT_MODELS.update(cfg.get("big_context_models") or [])
     os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
     bridge = Bridge(cfg)
 
@@ -729,7 +774,7 @@ async def main():
     await web.UnixSite(hook_runner, hsock).start()
     os.chmod(hsock, 0o600)
 
-    app = web.Application(middlewares=[bridge.auth_mw])
+    app = web.Application(middlewares=[bridge.auth_mw], client_max_size=25 * 1024 * 1024)
     app.router.add_get("/api/health", bridge.api_health)
     app.router.add_get("/api/sessions", bridge.api_sessions)
     app.router.add_get("/api/sessions/{sid}/items", bridge.api_items)
@@ -738,6 +783,7 @@ async def main():
     app.router.add_post("/api/sessions/{sid}/keys", bridge.api_keys)
     app.router.add_post("/api/sessions/{sid}/answer", bridge.api_answer)
     app.router.add_post("/api/sessions/{sid}/select", bridge.api_select)
+    app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
     app.router.add_post("/api/spawn", bridge.api_spawn)

@@ -93,6 +93,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import android.speech.RecognizerIntent
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import dev.mulm.claudemobile.prepareImage
+import androidx.compose.material.icons.filled.Add
+import androidx.activity.result.PickVisualMediaRequest
+import android.net.Uri
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,10 +161,20 @@ fun ChatScreen(sid: String) {
                                 session?.title?.ifBlank { null } ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text,
                             )
-                            Text(
-                                if (session == null) "Session ended" else "${session.project} · ${statusText(session)}",
-                                fontSize = 12.5.sp, color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (session == null) "Session ended" else "${session.project} · ${statusText(session)}",
+                                    fontSize = 12.5.sp, color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (session != null && session.context > 0) {
+                                    val pct = (session.context * 100 / session.contextMax).toInt()
+                                    Text(
+                                        " · $pct% context", fontSize = 12.5.sp, maxLines = 1,
+                                        color = if (pct >= 80) c.accentButton else c.faint,
+                                    )
+                                }
+                            }
                         }
                     },
                     actions = {
@@ -219,6 +233,8 @@ fun ChatScreen(sid: String) {
                         }
                     },
                     enabled = live,
+                    onAttach = { uri -> bridge.upload(sid, prepareImage(ctx, uri), "image/jpeg") },
+                    onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     hint = when {
                         session == null -> "Session ended"
                         conn != Conn.Connected -> "Not connected"
@@ -592,10 +608,30 @@ private fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit) {
 private fun Composer(
     enabled: Boolean, hint: String, onSend: (String, () -> Unit) -> Unit,
     quickActions: (@Composable () -> Unit)? = null,
+    onAttach: (suspend (Uri) -> String)? = null,
+    onError: (String) -> Unit = {},
 ) {
     val c = Claude.colors
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var text by rememberSaveable { mutableStateOf("") }
+    var uploading by remember { mutableStateOf(false) }
+    // A photo goes to the laptop first; its path lands in the message, where Claude reads it.
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null && onAttach != null) {
+            uploading = true
+            scope.launch {
+                try {
+                    val path = onAttach(uri)
+                    text = if (text.isBlank()) "$path " else text.trimEnd() + " $path "
+                } catch (e: Exception) {
+                    onError(e.message ?: "Couldn't send the photo")
+                } finally {
+                    uploading = false
+                }
+            }
+        }
+    }
     val speech = remember {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -622,7 +658,19 @@ private fun Composer(
         shadowElevation = 3.dp,
         modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 10.dp),
     ) {
-        Row(Modifier.padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+        Row(Modifier.padding(start = if (onAttach != null) 6.dp else 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+            if (onAttach != null) {
+                Box(
+                    Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).clickable(enabled = enabled && !uploading) {
+                        pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (uploading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.8.dp, color = c.accent)
+                    else Icon(Icons.Filled.Add, "Attach a photo", Modifier.size(22.dp), tint = if (enabled) c.muted else c.faint)
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             BasicTextField(
                 value = text, onValueChange = { text = it }, enabled = enabled, maxLines = 6,
                 textStyle = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = c.text),

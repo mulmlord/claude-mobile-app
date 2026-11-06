@@ -24,7 +24,11 @@ with push notifications when a session finishes, needs permission, or asks a que
   Write calls show a red/green line diff with +/− counts; one waiting for your permission
   opens by itself. The composer has a mic (Android speech-to-text) and quick actions:
   Continue, Yes, `/compact`, Switch mode (Shift+Tab, opens `>_` to show the mode) and
-  `/clear` (asks first).
+  `/clear` (asks first). The **+** button sends a photo (shrunk to 2000 px JPEG) to
+  `~/.cache/claude-mobile/uploads/` (kept 14 days) and puts its path in the message, where
+  Claude reads it. The chat header shows how full the context is (models seen past 200k
+  tokens count as 1M, remembered in `big_context_models`).
+* **Appearance:** Settings → System / Light / Dark.
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
   live terminal plus Esc/arrows/Enter for anything else.

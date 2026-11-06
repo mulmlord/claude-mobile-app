@@ -145,6 +145,8 @@ class Transcript:
         self.order: list[str] = []            # item ids in display order
         self.seq = 0
         self.title: str | None = None
+        self.context_tokens = 0       # size of the last request: how full the context is
+        self.model: str | None = None
         self.chain: list[str] = []            # entry uuids in conversation order
         self.chain_pos: dict[str, int] = {}
         self.item_entry: dict[str, int] = {}  # item id -> chain position of its source entry
@@ -264,6 +266,16 @@ class Transcript:
             return
 
         content = (e.get("message") or {}).get("content")
+
+        if t == "assistant":
+            msg = e.get("message") or {}
+            u = msg.get("usage") or {}
+            used = sum(int(u.get(k) or 0) for k in
+                       ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+            if used:
+                self.context_tokens = used
+            if msg.get("model") and not str(msg["model"]).startswith("<"):
+                self.model = msg["model"]
 
         if t == "assistant":
             blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]

@@ -23,5 +23,10 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("last_notify", 0L)
         set(v) = sp.edit { putLong("last_notify", v) }
 
+    /** system | light | dark */
+    var theme: String
+        get() = sp.getString("theme", "system") ?: "system"
+        set(v) = sp.edit { putString("theme", v) }
+
     val configured: Boolean get() = url.isNotBlank() && token.isNotBlank()
 }

@@ -241,6 +241,18 @@ class BridgeClient(private val prefs: Prefs) {
 
     suspend fun answer(sid: String, choice: String) = call("/api/sessions/$sid/answer", JSONObject().put("choice", choice))
 
+    /** Sends a photo to the laptop; returns where the bridge saved it. */
+    suspend fun upload(sid: String, bytes: ByteArray, type: String): String = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(prefs.url + "/api/sessions/$sid/upload")
+            .header("Authorization", "Bearer " + prefs.token)
+            .post(bytes.toRequestBody(type.toMediaType())).build()
+        http.newCall(req).execute().use { r ->
+            val text = r.body.string()
+            if (!r.isSuccessful) throw BridgeError(text.ifBlank { "Upload failed (HTTP ${r.code})" })
+            JSONObject(text).optString("path")
+        }
+    }
+
     suspend fun projects(): List<Project> = Project.list(call("/api/projects").optJSONArray("projects"))
 
     /** Opens a terminal on the laptop with a new (or resumed) session; returns its id once it connects. */

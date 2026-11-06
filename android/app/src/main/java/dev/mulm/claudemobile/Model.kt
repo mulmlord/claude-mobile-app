@@ -34,6 +34,9 @@ data class SessionInfo(
     val lastText: String,
     val connected: Boolean,
     val questions: List<Question>,
+    /** Tokens in the last request, and the model's context window. */
+    val context: Long = 0,
+    val contextMax: Long = 200_000,
 ) {
     val needsYou: Boolean get() = status == "permission" || status == "question"
 
@@ -45,6 +48,7 @@ data class SessionInfo(
             started = o.optDouble("started", 0.0), lastText = o.s("last_text"),
             connected = o.optBoolean("connected", true),
             questions = Question.list(o.optJSONArray("questions")),
+            context = o.optLong("context"), contextMax = o.optLong("context_max", 200_000).coerceAtLeast(1),
         )
     }
 }
