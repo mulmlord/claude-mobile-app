@@ -49,6 +49,12 @@ import java.util.Calendar
 import dev.mulm.claudemobile.Updater
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.DpOffset
 
 @Composable
 fun rememberNow(): Long {
@@ -84,6 +90,8 @@ fun SessionsScreen() {
     val installed = remember { Updater.installedCode(ctx) }
     val now = rememberNow()
     val c = Claude.colors
+    var renaming by remember { mutableStateOf<SessionInfo?>(null) }
+    var ending by remember { mutableStateOf<SessionInfo?>(null) }
 
     Scaffold(
         containerColor = c.bg,
@@ -191,11 +199,16 @@ fun SessionsScreen() {
                             color = c.faint, modifier = Modifier.padding(start = 2.dp, bottom = 2.dp),
                         )
                     }
-                    items(sorted, key = { it.id }) { s -> SessionCard(s, now) { Nav.go(Route.Chat(s.id)) } }
+                    items(sorted, key = { it.id }) { s ->
+                        SessionCard(s, now, onClick = { Nav.go(Route.Chat(s.id)) },
+                            onRename = { renaming = s }, onEnd = { ending = s })
+                    }
                 }
             }
         }
     }
+    renaming?.let { RenameSessionDialog(it) { renaming = null } }
+    ending?.let { EndSessionDialog(it) { ending = null } }
 }
 
 @Composable
@@ -222,14 +235,18 @@ fun ConnLine(conn: Conn, host: String, error: String?, awake: Boolean = false) {
     }
 }
 
+/** Tap opens the chat; long-press offers Rename / End session. */
 @Composable
-private fun SessionCard(s: SessionInfo, now: Long, onClick: () -> Unit) {
+private fun SessionCard(s: SessionInfo, now: Long, onClick: () -> Unit, onRename: () -> Unit, onEnd: () -> Unit) {
     val c = Claude.colors
     val needs = s.needsYou && s.connected
+    val shape = RoundedCornerShape(14.dp)
+    var menu by remember { mutableStateOf(false) }
     Surface(
-        onClick = onClick, shape = RoundedCornerShape(14.dp), color = c.surface,
+        shape = shape, color = c.surface,
         border = BorderStroke(1.dp, if (needs) c.accent.copy(alpha = 0.55f) else c.border),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clip(shape)
+            .combinedClickable(onClick = onClick, onLongClick = { menu = true }, onLongClickLabel = "Session actions"),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -253,6 +270,12 @@ private fun SessionCard(s: SessionInfo, now: Long, onClick: () -> Unit) {
                     maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp),
                 )
             }
+        }
+        // Inside the Surface's box, so the menu anchors to the card.
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface,
+            offset = DpOffset(12.dp, 0.dp)) {
+            MenuEntry("Rename…", enabled = s.connected) { menu = false; onRename() }
+            MenuEntry("End session…") { menu = false; onEnd() }
         }
     }
 }

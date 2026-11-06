@@ -253,6 +253,13 @@ class BridgeClient(private val prefs: Prefs) {
     suspend fun choose(sid: String, label: String, qid: String?) =
         call("/api/sessions/$sid/choose", JSONObject().put("label", label).apply { if (!qid.isNullOrBlank()) put("qid", qid) })
 
+    /** Types /exit into the session (after Esc if it's busy); [force] SIGTERMs its claude instead. */
+    suspend fun endSession(sid: String, force: Boolean = false) =
+        call("/api/sessions/$sid/end", JSONObject().put("force", force))
+
+    /** Types /rename; the new title comes back with the next sessions update. */
+    suspend fun rename(sid: String, name: String) = call("/api/sessions/$sid/rename", JSONObject().put("name", name))
+
     /** Sends a photo to the laptop; returns where the bridge saved it. */
     suspend fun upload(sid: String, bytes: ByteArray, type: String): String = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(prefs.url + "/api/sessions/$sid/upload")

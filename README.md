@@ -28,6 +28,19 @@ with push notifications when a session finishes, needs permission, or asks a que
   `~/.cache/claude-mobile/uploads/` (kept 14 days) and puts its path in the message, where
   Claude reads it. The chat header shows how full the context is (models seen past 200k
   tokens count as 1M, remembered in `big_context_models`).
+* **Search a chat** (⋮ → Search): matches messages, tool names, commands and output, case
+  insensitive. "3 / 12" with ↑ older / ↓ newer jumps between hits, starting at the newest;
+  the current one is outlined in the accent colour (a tool row opens when the hit is in its
+  command or output), the others are tinted faintly. Back closes the search.
+* **Rename and end sessions** from the chat's ⋮ menu or by long-pressing a session card.
+  Rename types `/rename <name>` into the session (one line, at most 80 characters), so
+  Claude Code stores it as the conversation's title (a `custom-title` transcript entry) and
+  it shows up on the phone and in `claude --resume`. This works while Claude is working
+  (`/rename` runs mid-turn rather than queueing) but not while a permission prompt or
+  question is open, since the typing would land in it. End interrupts a busy session (Esc),
+  clears the input line and types `/exit`; the conversation stays in history and can be
+  resumed. Force quit sends SIGTERM to the session's `claude` (SIGKILL 10 s later if it's
+  wedged), checking first that the pid is still the wrapper's child.
 * **Appearance:** Settings → System / Light / Dark.
 * **GitHub** (branch icon on the home screen, or in a chat whose folder is a clone) runs
   through the laptop's signed-in `gh`, so the phone holds no GitHub token. Repositories
@@ -109,6 +122,8 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`,
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
+`POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
+or a dialog is open),
 WebSocket `/api/ws` (`notify` events: `id, sid, kind, title, body`, plus `tool` {`name, summary,
 detail` or `diff, add, del`} on permission and `qid, options` on questions),
 `GET /api/projects`, `POST /api/spawn {"cwd", "resume"?}`, `GET|POST /api/settings {"keep_awake"}`,
