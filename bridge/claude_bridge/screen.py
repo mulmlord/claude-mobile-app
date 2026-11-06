@@ -153,9 +153,12 @@ class Screen:
         out: list[str] = []
         for j in range(top - 1, max(-1, top - 41), -1):
             st = lines[j].strip()
-            if st.startswith(("╭", "┌", "─", "━", "╌")):  # box top or rule: the dialog starts below it
+            if st.startswith(("╭", "┌", "─", "━", "●", "⎿")):  # box top, rule, or Claude's output above it
                 break
-            out.append(st.strip("│|").strip())
+            st = st.strip("│|").strip()
+            if st and set(st) <= set("╌┄┈-"):
+                continue  # dashed lines around the diff preview inside the prompt
+            out.append(st)
             if sum(1 for x in out if x) >= max_lines:
                 break
         text = "\n".join(reversed(out)).strip("\n")

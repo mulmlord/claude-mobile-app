@@ -79,6 +79,8 @@ class History:
                     continue
                 try:
                     e = json.loads(line)
+                    if not isinstance(e, dict):
+                        continue
                 except ValueError:
                     continue  # partial line at a chunk edge
                 t = e.get("type")

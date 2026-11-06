@@ -121,6 +121,21 @@ def clean_name(raw) -> str:
     return "".join(ch for ch in s if ch.isprintable()).strip()
 
 
+async def json_body(request: web.Request) -> dict:
+    """The request's JSON object for endpoints that act on it: an empty body is {}, but
+    malformed JSON or a non-object is the client's mistake (400), not a crash (500)."""
+    raw = await request.read()
+    if not raw.strip():
+        return {}
+    try:
+        d = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise web.HTTPBadRequest(text="body must be JSON")
+    if not isinstance(d, dict):
+        raise web.HTTPBadRequest(text="body must be a JSON object")
+    return d
+
+
 async def read_json(request: web.Request) -> dict:
     try:
         d = await request.json()
@@ -358,7 +373,7 @@ class Bridge:
                     s.last_local_input = time.time()
                 elif kind == b"X":
                     s.exited = True
-        except (asyncio.IncompleteReadError, ConnectionError, ValueError):
+        except (asyncio.IncompleteReadError, ConnectionError, ValueError, KeyError, TypeError):
             pass
         finally:
             writer.close()
@@ -410,7 +425,8 @@ class Bridge:
         await s.writer.drain()
 
     async def send_text(self, s: Session, text: str):
-        text = text.replace("\r\n", "\n").rstrip("\n")
+        # A lone \r is Enter to the terminal and would submit early; make it a newline.
+        text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
         if not text:
             return
         if "\n" in text or s.screen.bracketed_paste and len(text) > 1:
@@ -436,6 +452,8 @@ class Bridge:
         try:
             data = await request.json()
         except ValueError:
+            return web.json_response({})
+        if not isinstance(data, dict):
             return web.json_response({})
         s = self.sessions.get(sid)
         if s is None:
@@ -699,18 +717,22 @@ class Bridge:
 
     async def api_items(self, request):
         s = self.get_session(request)
-        items = s.transcript.snapshot(int(request.query.get("limit", 400))) if s.transcript else []
+        try:
+            limit = max(1, min(int(request.query.get("limit", 400)), 2000))
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a number")
+        items = s.transcript.snapshot(limit) if s.transcript else []
         return web.json_response({"sid": s.id, "items": items})
 
     async def api_send(self, request):
         s = self.get_session(request)
-        body = await request.json()
+        body = await json_body(request)
         await self.send_text(s, str(body.get("text", "")))
         return web.json_response({"ok": True})
 
     async def api_keys(self, request):
         s = self.get_session(request)
-        body = await request.json()
+        body = await json_body(request)
         for k in body.get("keys", []):
             await self.inject(s, self.key_bytes(s, str(k)))
             await asyncio.sleep(0.06)
@@ -738,7 +760,10 @@ class Bridge:
 
     async def api_select(self, request):
         s = self.get_session(request)
-        index = int((await request.json()).get("index", -1))
+        try:
+            index = int((await json_body(request)).get("index", -1))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="index must be a number")
         opt = await self.select_option(s, index)
         return web.json_response({"ok": True, "picked": opt})
 
@@ -748,7 +773,7 @@ class Bridge:
         it refuses once that question is no longer the one waiting, so a stale button
         can't answer whatever dialog came next."""
         s = self.get_session(request)
-        body = await request.json()
+        body = await json_body(request)
         label = str(body.get("label") or "").strip()
         if not label:
             raise web.HTTPBadRequest(text="label missing")
@@ -767,7 +792,7 @@ class Bridge:
     async def api_answer(self, request):
         """Answer a permission dialog by meaning: choice = yes | always | no."""
         s = self.get_session(request)
-        body = await request.json()
+        body = await json_body(request)
         choice = body.get("choice", "yes")
         opts = s.screen.dialog_options()
         if not opts:
@@ -911,7 +936,7 @@ class Bridge:
         return web.json_response({"projects": projects})
 
     async def api_spawn(self, request):
-        body = await request.json()
+        body = await json_body(request)
         resume = body.get("resume") or None
         prompt = str(body.get("prompt") or "").strip()[:20_000] or None
         raw_cwd = str(body.get("cwd") or "")
@@ -953,7 +978,7 @@ class Bridge:
 
     async def api_settings(self, request):
         if request.method == "POST":
-            body = await request.json()
+            body = await json_body(request)
             mode = body.get("keep_awake")
             if mode is not None:
                 if mode not in launcher.Awake.MODES:

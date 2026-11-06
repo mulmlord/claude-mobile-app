@@ -310,9 +310,6 @@ async def test_bad_numbers(gh, path):
     assert gh.calls == []
 
 
-@pytest.mark.xfail(reason="REPO_RE accepts an owner starting with '-', so `gh repo clone -x/y …` gets an "
-                          "option-like positional (GitHub owners can't start with '-'); reported, not fixed",
-                   strict=False)
 async def test_owner_cannot_look_like_an_option(gh):
     r = await gh.client.post("/api/gh/-u/x/local/clone")
     assert r.status == 400

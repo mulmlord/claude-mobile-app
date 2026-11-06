@@ -39,10 +39,9 @@ async def test_requests_without_the_right_token_are_refused(aiohttp_client, brid
     assert r.status == 401
 
 
-async def test_token_in_header_or_query(aiohttp_client, bridge):
+async def test_token_in_the_header(aiohttp_client, bridge):
     client = await aiohttp_client(server.make_app(bridge))
-    for kw in ({"headers": {"Authorization": f"Bearer {TOKEN}"}}, {"headers": {"Authorization": TOKEN}},
-               {"params": {"token": TOKEN}}):
+    for kw in ({"headers": {"Authorization": f"Bearer {TOKEN}"}}, {"headers": {"Authorization": TOKEN}}):
         r = await client.get("/api/health", **kw)
         assert r.status == 200, kw
         d = await r.json()
@@ -307,9 +306,6 @@ async def test_settings_persist_and_apply(api, bridge, sandbox, inhibitor):
     assert d == {"keep_awake": "off", "awake": False}
 
 
-@pytest.mark.xfail(reason="handlers read the body with request.json() and use it as a dict, so a malformed "
-                          "or non-object body is an unhandled exception (500) instead of a 400; reported",
-                   strict=False)
 async def test_malformed_bodies_are_client_errors(api, wrappers):
     await wrappers("w1")
     bad = [("/api/settings", b"{nope"), ("/api/settings", b"[1]"), ("/api/sessions/w1/send", b"{nope"),

@@ -21,7 +21,8 @@ from aiohttp import web
 
 from . import launcher
 
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# No leading "-": a repo argument must never look like an option to gh or git.
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.][A-Za-z0-9_.-]*$")
 REMOTE_RE = re.compile(r"github\.com[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 MAX_FILE_LINES, MAX_DIFF_LINES = 400, 3000
 
@@ -82,7 +83,7 @@ def checks_state(rollup) -> str | None:
             states.append("PENDING")
         else:
             states.append((c.get("conclusion") or "").upper())
-    if any(s in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE") for s in states):
+    if any(s in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "CANCELLED") for s in states):
         return "FAILURE"
     if any(s in ("PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "") for s in states):
         return "PENDING"

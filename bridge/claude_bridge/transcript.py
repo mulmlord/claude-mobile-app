@@ -185,6 +185,8 @@ class Transcript:
                 continue
             try:
                 entry = json.loads(line)
+                if not isinstance(entry, dict):
+                    continue
             except ValueError:
                 continue
             for item, rm in self._entry(entry):
