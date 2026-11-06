@@ -104,20 +104,25 @@ def check_items(rollup) -> list[dict]:
 
 
 def parse_diff(text: str) -> list[dict]:
-    files, cur, total = [], None, 0
+    files, cur, total, in_hunk = [], None, 0, False
     for ln in text.splitlines():
         if ln.startswith("diff --git "):
             m = re.match(r"diff --git a/(.*?) b/(.*)$", ln)
             cur = {"path": m.group(2) if m else ln[11:], "lines": [], "add": 0, "del": 0, "cut": 0}
             files.append(cur)
+            in_hunk = False
             continue
-        if cur is None or ln.startswith(("index ", "--- ", "+++ ", "new file mode", "deleted file mode",
-                                         "similarity index", "rename from", "rename to", "old mode", "new mode")):
+        # Header lines only come before a file's first hunk; inside one, "--- x" is the
+        # removed line "-- x" (an SQL comment, say).
+        if cur is None or not in_hunk and ln.startswith((
+                "index ", "--- ", "+++ ", "new file mode", "deleted file mode",
+                "similarity index", "rename from", "rename to", "old mode", "new mode")):
             continue
         if ln.startswith("Binary files"):
             cur["lines"].append("@binary file")
             continue
         if ln.startswith("@@"):
+            in_hunk = True
             ln = "@"
         elif ln.startswith("+"):
             cur["add"] += 1
@@ -201,7 +206,7 @@ class GitHub:
     @staticmethod
     def num(request: web.Request, key: str = "n") -> str:
         v = request.match_info[key]
-        if not v.isdigit():
+        if not (v.isascii() and v.isdigit()):  # str.isdigit() alone takes "²" and "٣"
             raise web.HTTPBadRequest(text="bad number")
         return v
 
@@ -457,7 +462,8 @@ class GitHub:
             elif ln.startswith("? "):
                 changes.append({"status": "?", "path": ln[2:]})
             elif ln.startswith("u "):
-                changes.append({"status": "U", "path": ln.split(" ")[-1]})
+                # "u XY sub m1 m2 m3 mW h1 h2 h3 path": the path may contain spaces
+                changes.append({"status": "U", "path": ln.split(" ", 10)[10]})
         commits = [dict(zip(("hash", "subject", "when", "author"), c.split("\t"))) for c in log.splitlines() if c]
         home = os.path.expanduser("~")
         return web.json_response({

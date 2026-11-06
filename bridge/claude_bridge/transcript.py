@@ -96,7 +96,7 @@ def tool_diff(name: str, inp: dict) -> dict | None:
         return None
     lines, add, rem = [], 0, 0
     for old, new in pairs:
-        if lines:
+        if lines and lines[-1] != "@":
             lines.append("@")
         body = list(difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=3))[2:]
         for ln in body:
@@ -107,6 +107,8 @@ def tool_diff(name: str, inp: dict) -> dict | None:
             add += ln.startswith("+")
             rem += ln.startswith("-")
             lines.append(ln)
+    while lines and lines[-1] == "@":  # an edit that changed nothing
+        lines.pop()
     out, size = [], 0
     for ln in lines:
         ln = _clip(ln, 400)
@@ -231,6 +233,8 @@ class Transcript:
                 self.title = e["aiTitle"]
             return
         if t in ("custom-title", "summary") and (e.get("customTitle") or e.get("summary")):
+            if t == "summary" and self._custom_title:
+                return  # a name you gave the session (/rename) beats any summary
             self.title = e.get("customTitle") or e.get("summary")
             self._custom_title = t == "custom-title"
             return

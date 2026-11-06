@@ -24,8 +24,15 @@ import time
 log = logging.getLogger("claude-bridge")
 
 CLAUDE_DIR = os.path.expanduser("~/.claude")
-UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")  # \Z: no trailing newline
 HEAD, TAIL = 128 * 1024, 64 * 1024
+TMP_PREFIX = "/tmp/"  # sessions run in throwaway folders are not offered again
+
+
+def inside(path: str, folder: str) -> bool:
+    """`path` is `folder` or below it: "/home/userX" is not inside "/home/user"."""
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(folder + "/")
 
 
 def _prompt_text(content) -> str | None:
@@ -100,7 +107,7 @@ class History:
             if not info:
                 continue
             cwd = info["cwd"]
-            if cwd.startswith("/tmp/") or not cwd.startswith(home) or not os.path.isdir(cwd):
+            if cwd.startswith(TMP_PREFIX) or not inside(cwd, home) or not os.path.isdir(cwd):
                 continue
             groups.setdefault(cwd, []).append(info)
         out = []
@@ -239,7 +246,7 @@ class Awake:
         hold = mode != "off" and now - self.last_want < grace
         if hold and not self.active:
             await self._start()
-            return True
+            return self.active  # False when there's no systemd-inhibit to start
         if not hold and self.active:
             await self._stop()
             return True
