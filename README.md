@@ -20,7 +20,11 @@ with push notifications when a session finishes, needs permission, or asks a que
   environment) via a marked block at the end of `~/.config/hypr/hyprland.lua`.
   Print mode (`-p`), subcommands and non-TTY use pass straight through.
 * **Chat** shows the transcript (messages, tool calls with results). Sending a message
-  types it into the session exactly as if you'd typed it at the laptop.
+  types it into the session exactly as if you'd typed it at the laptop. Edit, MultiEdit and
+  Write calls show a red/green line diff with +/− counts; one waiting for your permission
+  opens by itself. The composer has a mic (Android speech-to-text) and quick actions:
+  Continue, Yes, `/compact`, Switch mode (Shift+Tab, opens `>_` to show the mode) and
+  `/clear` (asks first).
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
   live terminal plus Esc/arrows/Enter for anything else.

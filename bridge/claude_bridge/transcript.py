@@ -8,12 +8,15 @@ phone can upsert them (a tool item is updated when its result arrives).
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
 
 MAX_TEXT = 20_000
 MAX_RESULT = 3_000
+MAX_DIFF_LINES = 300
+MAX_DIFF_CHARS = 30_000
 
 
 def _clip(s: str, n: int) -> str:
@@ -73,6 +76,48 @@ def tool_detail(name: str, inp: dict) -> str:
     if name == "Write":
         return _clip(inp.get("content", ""), 3000)
     return _clip(json.dumps(inp, ensure_ascii=False, indent=1), 3000)
+
+
+def tool_diff(name: str, inp: dict) -> dict | None:
+    """Line diff for file edits: {"lines": ["+added", "-removed", " context", "@"], "add": n, "del": n}.
+
+    "@" separates hunks. Counts cover the whole change; lines are capped so a big
+    Write can't bloat every snapshot sent to the phone.
+    """
+    inp = inp if isinstance(inp, dict) else {}
+    pairs = []
+    if name == "Edit":
+        pairs.append((inp.get("old_string") or "", inp.get("new_string") or ""))
+    elif name == "MultiEdit":
+        pairs += [(e.get("old_string") or "", e.get("new_string") or "") for e in inp.get("edits") or [] if isinstance(e, dict)]
+    elif name == "Write":
+        pairs.append(("", inp.get("content") or ""))
+    else:
+        return None
+    lines, add, rem = [], 0, 0
+    for old, new in pairs:
+        if lines:
+            lines.append("@")
+        body = list(difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=3))[2:]
+        for ln in body:
+            if ln.startswith("@@"):
+                if lines and lines[-1] != "@":
+                    lines.append("@")
+                continue
+            add += ln.startswith("+")
+            rem += ln.startswith("-")
+            lines.append(ln)
+    out, size = [], 0
+    for ln in lines:
+        ln = _clip(ln, 400)
+        if len(out) >= MAX_DIFF_LINES or size + len(ln) > MAX_DIFF_CHARS:
+            out.append(f"@{len(lines) - len(out)} more lines")
+            break
+        out.append(ln)
+        size += len(ln)
+    if out and out[0] == "@":
+        out.pop(0)
+    return {"lines": out, "add": add, "del": rem}
 
 
 def _result_text(content) -> str:
@@ -232,6 +277,9 @@ class Transcript:
                     inp = b.get("input") or {}
                     item = {"id": iid, "kind": "tool", "name": name, "summary": tool_summary(name, inp, self.cwd),
                             "detail": tool_detail(name, inp), "ts": ts, "status": "running"}
+                    diff = tool_diff(name, inp)
+                    if diff:
+                        item["diff"], item["add"], item["del"] = diff["lines"], diff["add"], diff["del"]
                     if name == "AskUserQuestion":
                         item["questions"] = [
                             {"question": q.get("question", ""), "header": q.get("header", ""),

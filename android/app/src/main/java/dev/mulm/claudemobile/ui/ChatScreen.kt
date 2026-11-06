@@ -87,6 +87,12 @@ import dev.mulm.claudemobile.Notifier
 import dev.mulm.claudemobile.ScreenState
 import dev.mulm.claudemobile.SessionInfo
 import kotlinx.coroutines.launch
+import androidx.compose.material3.AlertDialog
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.speech.RecognizerIntent
+import android.content.Intent
+import android.content.ActivityNotFoundException
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,6 +108,7 @@ fun ChatScreen(sid: String) {
     val screen by bridge.screen.collectAsState()
     val conn by bridge.conn.collectAsState()
     var showTerminal by rememberSaveable { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
     val needsYou = session?.needsYou == true
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -197,8 +204,21 @@ fun ChatScreen(sid: String) {
                         onSelect = { i -> act { bridge.select(sid, i) } },
                         onEsc = { act { bridge.keys(sid, "esc") } })
                 }
+                val live = session?.connected == true && conn == Conn.Connected
                 Composer(
-                    enabled = session?.connected == true && conn == Conn.Connected,
+                    quickActions = if (!live || needsYou) null else {
+                        {
+                            QuickActions(
+                                onText = { t -> act { bridge.sendText(sid, t) } },
+                                onMode = {
+                                    act { bridge.keys(sid, "shift-tab") }
+                                    showTerminal = true
+                                },
+                                onClear = { confirmClear = true },
+                            )
+                        }
+                    },
+                    enabled = live,
                     hint = when {
                         session == null -> "Session ended"
                         conn != Conn.Connected -> "Not connected"
@@ -212,6 +232,46 @@ fun ChatScreen(sid: String) {
         },
     ) { pad ->
         MessageList(items, pad, working = session?.status == "working" && session.connected)
+    }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = c.surface,
+            title = { Text("Clear this conversation?", fontFamily = Serif, fontSize = 21.sp, color = c.text) },
+            text = {
+                Text("Claude starts fresh in this session. The old conversation stays in your history and can be resumed later.",
+                    fontSize = 14.sp, lineHeight = 20.sp, color = c.muted)
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmClear = false; act { bridge.sendText(sid, "/clear") } }) {
+                    Text("Clear", color = c.danger, fontWeight = FontWeight.Medium)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel", color = c.muted) } },
+        )
+    }
+}
+
+/** One-tap replies and commands, shown above the empty composer. */
+@Composable
+private fun QuickActions(onText: (String) -> Unit, onMode: () -> Unit, onClear: () -> Unit) {
+    val c = Claude.colors
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        @Composable
+        fun chip(label: String, mono: Boolean = false, onClick: () -> Unit) {
+            Surface(onClick = onClick, shape = RoundedCornerShape(50), color = c.surface, border = BorderStroke(1.dp, c.border)) {
+                Text(label, fontSize = 13.5.sp, color = c.text, fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp))
+            }
+        }
+        chip("Continue") { onText("continue") }
+        chip("Yes") { onText("yes") }
+        chip("/compact", mono = true) { onText("/compact") }
+        chip("Switch mode") { onMode() }
+        chip("/clear", mono = true) { onClear() }
     }
 }
 
@@ -322,12 +382,15 @@ private fun SystemNote(text: String) {
 
 @Composable
 private fun ToolRow(item: Item) {
-    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    // An edit waiting for your permission opens by itself, so you read the change before allowing it.
+    var manual by rememberSaveable(item.id) { mutableStateOf<Boolean?>(null) }
+    val hasDiff = item.diff.isNotEmpty()
+    val expanded = manual ?: (item.status == "running" && hasDiff)
     val c = Claude.colors
     val shape = RoundedCornerShape(12.dp)
     Column(Modifier.fillMaxWidth().clip(shape).border(1.dp, c.border, shape)) {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().clickable { manual = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
@@ -344,6 +407,11 @@ private fun ToolRow(item: Item) {
                 item.summary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
                 color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
+            if (item.added + item.removed > 0) {
+                Spacer(Modifier.width(8.dp))
+                Text("+${item.added}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = c.success)
+                Text(" −${item.removed}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = c.danger)
+            }
             val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
             Icon(Icons.Filled.KeyboardArrowDown, null, Modifier.size(18.dp).rotate(turn), tint = c.faint)
         }
@@ -364,7 +432,12 @@ private fun ToolRow(item: Item) {
         AnimatedVisibility(visible = expanded) {
             Column {
                 HorizontalDivider(color = c.border)
-                SelectionContainer {
+                if (hasDiff) {
+                    DiffView(item.diff)
+                    if (item.status == "error" && item.result.isNotBlank()) {
+                        Column(Modifier.fillMaxWidth().background(c.soft).padding(12.dp)) { Mono(item.result, c.danger) }
+                    }
+                } else SelectionContainer {
                     Column(
                         Modifier.fillMaxWidth().background(c.soft).heightIn(max = 420.dp)
                             .verticalScroll(rememberScrollState()).padding(12.dp),
@@ -377,6 +450,40 @@ private fun ToolRow(item: Item) {
                             }
                             Mono(item.result, if (item.status == "error") c.danger else c.muted)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiffView(lines: List<String>) {
+    val c = Claude.colors
+    val addBg = c.success.copy(alpha = if (c.dark) 0.20f else 0.13f)
+    val delBg = c.danger.copy(alpha = if (c.dark) 0.20f else 0.10f)
+    SelectionContainer {
+        Column(
+            Modifier.fillMaxWidth().background(c.soft).heightIn(max = 460.dp)
+                .verticalScroll(rememberScrollState()).padding(vertical = 6.dp),
+        ) {
+            lines.forEach { ln ->
+                if (ln.startsWith("@")) {
+                    Text(
+                        if (ln.length > 1) "⋯ ${ln.drop(1)}" else "⋯", fontFamily = FontFamily.Monospace,
+                        fontSize = 11.5.sp, color = c.faint, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+                } else {
+                    val sign = ln.firstOrNull() ?: ' '
+                    val (bg, fg) = when (sign) {
+                        '+' -> addBg to c.success
+                        '-' -> delBg to c.danger
+                        else -> Color.Transparent to c.faint
+                    }
+                    Row(Modifier.fillMaxWidth().background(bg).padding(horizontal = 8.dp, vertical = 1.dp)) {
+                        Text(if (sign == ' ') " " else sign.toString(), fontFamily = FontFamily.Monospace, fontSize = 11.5.sp,
+                            lineHeight = 16.sp, color = fg, fontWeight = FontWeight.Bold, modifier = Modifier.width(14.dp))
+                        Text(ln.drop(1), fontFamily = FontFamily.Monospace, fontSize = 11.5.sp, lineHeight = 16.sp, color = c.text)
                     }
                 }
             }
@@ -482,9 +589,23 @@ private fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit) {
 
 /** claude.ai-style composer: one rounded box, text on the left, terracotta ↑ on the right. */
 @Composable
-private fun Composer(enabled: Boolean, hint: String, onSend: (String, () -> Unit) -> Unit) {
+private fun Composer(
+    enabled: Boolean, hint: String, onSend: (String, () -> Unit) -> Unit,
+    quickActions: (@Composable () -> Unit)? = null,
+) {
     val c = Claude.colors
+    val ctx = LocalContext.current
     var text by rememberSaveable { mutableStateOf("") }
+    val speech = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Claude")
+    }
+    val canSpeak = remember { ctx.packageManager.queryIntentActivities(speech, 0).isNotEmpty() }
+    val dictate = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val said = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()
+        if (!said.isNullOrEmpty()) text = if (text.isBlank()) said else text.trimEnd() + " " + said
+    }
     val canSend = enabled && text.isNotBlank()
     fun send() {
         val t = text.trim()
@@ -492,6 +613,9 @@ private fun Composer(enabled: Boolean, hint: String, onSend: (String, () -> Unit
             text = ""
             onSend(t) { text = t }
         }
+    }
+    if (quickActions != null && text.isEmpty()) {
+        Box(Modifier.padding(top = 8.dp)) { quickActions() }
     }
     Surface(
         shape = RoundedCornerShape(24.dp), color = c.surface, border = BorderStroke(1.dp, c.border),
@@ -513,7 +637,22 @@ private fun Composer(enabled: Boolean, hint: String, onSend: (String, () -> Unit
                     }
                 },
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(4.dp))
+            if (canSpeak) {
+                Box(
+                    Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).clickable(enabled = enabled) {
+                        try {
+                            dictate.launch(speech)
+                        } catch (e: ActivityNotFoundException) {
+                            // recognizer went away; nothing to do
+                        }
+                    },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(MicIcon, "Dictate", Modifier.size(21.dp), tint = if (enabled) c.muted else c.faint)
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             Box(
                 Modifier.size(36.dp).clip(RoundedCornerShape(11.dp))
                     .background(if (canSend) c.accentButton else c.accentButton.copy(alpha = 0.35f))

@@ -60,6 +60,10 @@ data class Item(
     val result: String,
     val status: String,          // tool: running | done | error
     val questions: List<Question>,
+    /** File edits: "+line", "-line", " context", "@" (hunk break, optionally "@N more lines"). */
+    val diff: List<String> = emptyList(),
+    val added: Int = 0,
+    val removed: Int = 0,
 ) {
     companion object {
         fun from(o: JSONObject) = Item(
@@ -67,6 +71,8 @@ data class Item(
             name = o.s("name"), summary = o.s("summary"), detail = o.s("detail"),
             result = o.s("result"), status = o.s("status"),
             questions = Question.list(o.optJSONArray("questions")),
+            diff = o.optJSONArray("diff")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList(),
+            added = o.optInt("add"), removed = o.optInt("del"),
         )
     }
 }
