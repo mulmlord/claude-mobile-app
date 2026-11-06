@@ -46,9 +46,17 @@ class MainActivity : ComponentActivity() {
             Notifier.cancel(this, sid)
             Nav.go(Route.Chat(sid))
         }
+        if (i.getBooleanExtra(EXTRA_NEW_SESSION, false)) {
+            Nav.go(if (App.instance.prefs.configured) Route.NewSession else Route.Settings())
+        }
         val data = i.data
         if (data != null && data.scheme == "claudemobile" && data.host == "setup") {
             Nav.go(Route.Settings(url = data.getQueryParameter("url") ?: "", token = data.getQueryParameter("token") ?: ""))
         }
+    }
+
+    companion object {
+        /** Set by the home-screen widget's "+": open on New session. */
+        const val EXTRA_NEW_SESSION = "new_session"
     }
 }

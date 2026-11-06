@@ -44,5 +44,9 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.46.0")
+    // Home-screen widget. Glance only asks for WorkManager 2.7 (2021, before Android 13 and 14);
+    // naming a current release makes it win resolution.
+    implementation("androidx.glance:glance-appwidget:1.2.0")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

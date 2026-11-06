@@ -58,6 +58,11 @@ with push notifications when a session finishes, needs permission, or asks a que
   push, no accounts). Permission notifications have Allow/Deny, finished ones have an
   inline Reply. They're muted while you're typing into that session at the laptop
   (`quiet_after_local_input` in `~/.config/claude-mobile/config.json`, default 45 s).
+* **Home-screen widget** ("Claude sessions", 4×2, resizable): sessions that need you first,
+  then the most recent, each opening its chat; **+** opens New session. The background
+  service redraws it as sessions change (at most once a second; the widget never polls or
+  connects by itself). When the laptop is away it keeps the last list, marked
+  "Offline since …". Light or dark follows the system.
 
 ## Setup
 
