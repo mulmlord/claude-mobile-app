@@ -1,0 +1,381 @@
+#!/usr/bin/python3 -I
+"""Transparent PTY wrapper for interactive `claude` sessions.
+
+Runs the real `claude` inside a pseudo-terminal and copies bytes between it and
+your terminal unchanged, so the session looks and behaves exactly as before.
+On the side it connects to the claude-mobile bridge (if it is running) so the
+phone app can see the screen and type into the session.
+
+Anything that is not an interactive terminal session (print mode, subcommands,
+no TTY, nested claude) is exec'd straight through without wrapping.
+Stdlib only; the bridge connection is best-effort and can never break the
+terminal session.
+"""
+
+import errno
+import fcntl
+import json
+import os
+import select
+import shutil
+import signal
+import socket
+import struct
+import sys
+import termios
+import time
+import tty
+import uuid
+
+SUBCOMMANDS = {
+    "agents", "api-key", "attach", "auth", "auto-mode", "config", "doctor",
+    "gateway", "import", "install", "logs", "mcp", "migrate-installer",
+    "plugin", "plugins", "purge", "remote-control", "respawn", "rm",
+    "setup-token", "stop", "ultrareview", "update", "upgrade",
+}
+PASSTHROUGH_FLAGS = {"-p", "--print", "-v", "--version", "-h", "--help"}
+
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "claude-mobile")
+WRAPPER_SOCK = os.path.join(RUNTIME, "wrappers.sock")
+RING_MAX = 512 * 1024          # recent output replayed to the bridge on (re)connect
+OUTBUF_MAX = 4 * 1024 * 1024   # drop the bridge link rather than buffer unboundedly
+RECONNECT_EVERY = 3.0
+
+
+def real_claude():
+    me = os.path.realpath(__file__)
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        p = os.path.join(d, "claude")
+        if os.path.isfile(p) and os.access(p, os.X_OK) and os.path.realpath(p) != me:
+            return p
+    return shutil.which("claude") or "claude"
+
+
+def should_wrap(argv):
+    if os.environ.get("CLAUDE_MOBILE_DISABLE") or os.environ.get("CLAUDE_MOBILE_ID"):
+        return False
+    if not (os.isatty(0) and os.isatty(1)):
+        return False
+    if any(a in PASSTHROUGH_FLAGS for a in argv):
+        return False
+    if argv and not argv[0].startswith("-") and argv[0] in SUBCOMMANDS:
+        return False
+    return True
+
+
+def get_winsize(fd):
+    try:
+        return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    except OSError:
+        return (24, 80, 0, 0)
+
+
+def set_winsize(fd, ws):
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", *ws))
+    except OSError:
+        pass
+
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        try:
+            n = os.write(fd, view)
+            view = view[n:]
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            select.select([], [fd], [], 1.0)
+
+
+class BridgeLink:
+    """Length-prefixed frames over a unix socket: 1 byte type + 4 byte BE length + payload.
+
+    wrapper -> bridge: H hello(json)  O output bytes  R resize(json)  A local-activity  X exit(json)
+    bridge -> wrapper: I input bytes
+    """
+
+    def __init__(self, wid, info):
+        self.wid = wid
+        self.info = info
+        self.sock = None
+        self.outbuf = bytearray()
+        self.inbuf = bytearray()
+        self.next_try = 0.0
+        self.last_activity_sent = 0.0
+
+    def connected(self):
+        return self.sock is not None
+
+    def try_connect(self, ring, ws):
+        now = time.monotonic()
+        if self.sock or now < self.next_try:
+            return
+        self.next_try = now + RECONNECT_EVERY
+        if not os.path.exists(WRAPPER_SOCK):
+            return
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.settimeout(0.5)
+            s.connect(WRAPPER_SOCK)
+            s.setblocking(False)
+        except OSError:
+            s.close()
+            return
+        self.sock = s
+        self.outbuf.clear()
+        self.inbuf.clear()
+        hello = dict(self.info, rows=ws[0], cols=ws[1])
+        self.send(b"H", json.dumps(hello).encode())
+        if ring:
+            self.send(b"O", bytes(ring))
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.sock = None
+        self.outbuf.clear()
+        self.next_try = time.monotonic() + RECONNECT_EVERY
+
+    def send(self, kind, payload):
+        if not self.sock:
+            return
+        self.outbuf += kind + struct.pack(">I", len(payload)) + payload
+        if len(self.outbuf) > OUTBUF_MAX:
+            self.close()
+            return
+        self.flush()
+
+    def flush(self):
+        if not self.sock or not self.outbuf:
+            return
+        try:
+            n = self.sock.send(self.outbuf)
+            del self.outbuf[:n]
+        except BlockingIOError:
+            pass
+        except OSError:
+            self.close()
+
+    def activity(self):
+        now = time.monotonic()
+        if now - self.last_activity_sent > 5:
+            self.last_activity_sent = now
+            self.send(b"A", b"")
+
+    def read_frames(self):
+        """Returns list of (kind, payload); closes on EOF/error."""
+        frames = []
+        try:
+            data = self.sock.recv(65536)
+        except BlockingIOError:
+            return frames
+        except OSError:
+            self.close()
+            return frames
+        if not data:
+            self.close()
+            return frames
+        self.inbuf += data
+        while len(self.inbuf) >= 5:
+            (n,) = struct.unpack(">I", self.inbuf[1:5])
+            if len(self.inbuf) < 5 + n:
+                break
+            frames.append((bytes(self.inbuf[0:1]), bytes(self.inbuf[5:5 + n])))
+            del self.inbuf[:5 + n]
+        return frames
+
+
+def main():
+    argv = sys.argv[1:]
+    claude = real_claude()
+    if not should_wrap(argv):
+        os.execvp(claude, [claude] + argv)
+
+    wid = uuid.uuid4().hex[:12]
+    stdin_fd, stdout_fd = 0, 1
+    ws = get_winsize(stdin_fd)
+    try:
+        orig_attrs = termios.tcgetattr(stdin_fd)
+    except termios.error:
+        os.execvp(claude, [claude] + argv)
+
+    master, slave = os.openpty()
+    try:
+        termios.tcsetattr(slave, termios.TCSANOW, orig_attrs)
+    except termios.error:
+        pass
+    set_winsize(slave, ws)
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.close(master)
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+            for fd in (0, 1, 2):
+                os.dup2(slave, fd)
+            if slave > 2:
+                os.close(slave)
+            env = dict(os.environ, CLAUDE_MOBILE_ID=wid, CLAUDE_MOBILE_PID=str(os.getpid()))
+            env.pop("CLAUDE_MOBILE_SPAWN", None)
+            os.execvpe(claude, [claude] + argv, env)
+        except BaseException:
+            os._exit(127)
+    os.close(slave)
+
+    link = BridgeLink(wid, {
+        "id": wid, "pid": pid, "wrapper_pid": os.getpid(), "cwd": os.getcwd(),
+        "argv": argv, "started": time.time(), "tty": os.ttyname(stdin_fd) if os.isatty(stdin_fd) else "",
+        # set when the phone asked the bridge to open this session
+        "spawn": os.environ.get("CLAUDE_MOBILE_SPAWN", ""),
+    })
+    ring = bytearray()
+    state = {"raw": False, "exit": None}
+
+    def set_raw():
+        try:
+            tty.setraw(stdin_fd, termios.TCSANOW)
+            state["raw"] = True
+        except termios.error:
+            pass
+
+    def restore():
+        if state["raw"]:
+            try:
+                termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, orig_attrs)
+            except termios.error:
+                pass
+            state["raw"] = False
+
+    def on_winch(*_):
+        nonlocal ws
+        ws = get_winsize(stdin_fd)
+        set_winsize(master, ws)
+        try:
+            link.send(b"R", json.dumps({"rows": ws[0], "cols": ws[1]}).encode())
+        except Exception:
+            pass
+
+    def on_term(signum, _frame):
+        try:
+            os.kill(pid, signal.SIGHUP if signum == signal.SIGHUP else signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    def on_cont(*_):
+        set_raw()
+        on_winch()
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+    signal.signal(signal.SIGWINCH, on_winch)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGHUP, on_term)
+    signal.signal(signal.SIGCONT, on_cont)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)   # Ctrl+C reaches claude as a byte in raw mode
+    signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+
+    set_raw()
+    stdin_open = True
+    try:
+        while True:
+            link.try_connect(ring, ws)
+            rfds = [master] + ([stdin_fd] if stdin_open else []) + ([link.sock] if link.sock else [])
+            wfds = [link.sock] if (link.sock and link.outbuf) else []
+            try:
+                r, w, _ = select.select(rfds, wfds, [], 0.25)
+            except InterruptedError:
+                continue
+
+            if master in r:
+                try:
+                    data = os.read(master, 65536)
+                except OSError as e:
+                    if e.errno == errno.EIO:
+                        break
+                    raise
+                if not data:
+                    break
+                write_all(stdout_fd, data)
+                ring += data
+                if len(ring) > RING_MAX:
+                    del ring[:len(ring) - RING_MAX]
+                link.send(b"O", data)
+
+            if stdin_open and stdin_fd in r:
+                try:
+                    data = os.read(stdin_fd, 65536)
+                except OSError:
+                    data = b""
+                if data:
+                    write_all(master, data)
+                    link.activity()
+                else:
+                    stdin_open = False
+
+            if link.sock and link.sock in r:
+                for kind, payload in link.read_frames():
+                    if kind == b"I" and payload:
+                        write_all(master, payload)
+
+            if link.sock and link.sock in w:
+                link.flush()
+
+            # Child stopped itself (Ctrl+Z inside claude): suspend ourselves too.
+            try:
+                wpid, status = os.waitpid(pid, os.WNOHANG | os.WUNTRACED)
+            except ChildProcessError:
+                break
+            if wpid == pid:
+                if os.WIFSTOPPED(status):
+                    restore()
+                    signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+                    os.kill(os.getpid(), signal.SIGTSTP)
+                    # resumed: on_cont already restored raw mode and continued the child
+                elif os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                    state["exit"] = status
+                    # drain any remaining output
+                    while True:
+                        try:
+                            data = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not data:
+                            break
+                        write_all(stdout_fd, data)
+                    break
+    finally:
+        restore()
+        try:
+            if state["exit"] is None:
+                _, status = os.waitpid(pid, 0)
+                state["exit"] = status
+        except ChildProcessError:
+            state["exit"] = state["exit"] or 0
+        try:
+            link.send(b"X", json.dumps({"status": state["exit"]}).encode())
+            deadline = time.monotonic() + 0.5
+            while link.sock and link.outbuf and time.monotonic() < deadline:
+                select.select([], [link.sock], [], 0.1)
+                link.flush()
+        except Exception:
+            pass
+        link.close()
+
+    status = state["exit"] or 0
+    if os.WIFEXITED(status):
+        sys.exit(os.WEXITSTATUS(status))
+    if os.WIFSIGNALED(status):
+        sys.exit(128 + os.WTERMSIG(status))
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

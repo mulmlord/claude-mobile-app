@@ -1,0 +1,20 @@
+#!/bin/bash
+# Claude Code hook -> claude-mobile bridge. Must stay fast, silent and always exit 0:
+# anything printed on stdout by SessionStart/UserPromptSubmit hooks becomes Claude context.
+
+[ -n "$CLAUDE_MOBILE_ID" ] || exit 0
+
+# Only the claude process the wrapper started reports; a nested `claude -p` run from a
+# Bash tool inherits CLAUDE_MOBILE_ID but is not our direct ancestor within two levels.
+p1=$PPID
+p2=$(ps -o ppid= -p "$p1" 2>/dev/null | tr -d ' ')
+[ "$p1" = "$CLAUDE_MOBILE_PID" ] || [ "$p2" = "$CLAUDE_MOBILE_PID" ] || exit 0
+
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-mobile/hooks.sock"
+[ -S "$sock" ] || exit 0
+
+curl -s -m 2 --unix-socket "$sock" \
+  -H 'Content-Type: application/json' \
+  -H "X-Claude-Mobile-Id: $CLAUDE_MOBILE_ID" \
+  --data-binary @- http://bridge/hook >/dev/null 2>&1
+exit 0
