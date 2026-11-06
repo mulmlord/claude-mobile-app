@@ -883,7 +883,7 @@ class Bridge:
                     h.update(chunk)
             info = {"versionCode": int(el["versionCode"]), "versionName": el.get("versionName", ""),
                     "size": os.path.getsize(apk), "sha256": h.hexdigest()}
-        except (OSError, ValueError, KeyError, IndexError):
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
             return None
         self.app_cache = (mtime, info, apk)
         return info, apk
@@ -914,7 +914,9 @@ class Bridge:
         body = await request.json()
         resume = body.get("resume") or None
         prompt = str(body.get("prompt") or "").strip()[:20_000] or None
-        cwd = os.path.realpath(os.path.expanduser(str(body.get("cwd") or "")))
+        raw_cwd = str(body.get("cwd") or "")
+        # realpath("") would be the daemon's own working directory
+        cwd = os.path.realpath(os.path.expanduser(raw_cwd)) if raw_cwd else ""
         if resume:
             if not launcher.UUID_RE.match(str(resume)):
                 raise web.HTTPBadRequest(text="bad session id")
@@ -927,7 +929,8 @@ class Bridge:
             if resume in await asyncio.to_thread(launcher.running_session_ids):
                 raise web.HTTPConflict(text="That session is open in a terminal the phone can't reach. Close it on the laptop first.")
             cwd = info["cwd"]
-        if not os.path.isdir(cwd) or not cwd.startswith(os.path.expanduser("~")):
+        home = os.path.realpath(os.path.expanduser("~"))
+        if not os.path.isdir(cwd) or not launcher.inside(os.path.realpath(cwd), home):
             raise web.HTTPBadRequest(text=f"not a folder in your home directory: {cwd}")
         token = secrets.token_hex(8)
         fut = asyncio.get_running_loop().create_future()
@@ -1030,28 +1033,14 @@ class Bridge:
         return ws
 
 
-async def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = load_config()
-    BIG_CONTEXT_MODELS.update(cfg.get("big_context_models") or [])
-    os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
-    bridge = Bridge(cfg)
-
-    wsock = os.path.join(RUNTIME, "wrappers.sock")
-    hsock = os.path.join(RUNTIME, "hooks.sock")
-    for p in (wsock, hsock):
-        if os.path.exists(p):
-            os.unlink(p)
-    wrapper_server = await asyncio.start_unix_server(bridge.handle_wrapper, path=wsock)
-    os.chmod(wsock, 0o600)
-
+def make_hook_app(bridge: Bridge) -> web.Application:
     hook_app = web.Application()
     hook_app.router.add_post("/hook", bridge.handle_hook)
-    hook_runner = web.AppRunner(hook_app, access_log=None)
-    await hook_runner.setup()
-    await web.UnixSite(hook_runner, hsock).start()
-    os.chmod(hsock, 0o600)
+    return hook_app
 
+
+def make_app(bridge: Bridge) -> web.Application:
+    """The phone-facing API (also built by the tests)."""
     app = web.Application(middlewares=[bridge.auth_mw, github.errors_mw], client_max_size=25 * 1024 * 1024)
     app.router.add_get("/api/health", bridge.api_health)
     app.router.add_get("/api/sessions", bridge.api_sessions)
@@ -1073,6 +1062,30 @@ async def main():
     app.router.add_post("/api/spawn", bridge.api_spawn)
     app.router.add_get("/api/settings", bridge.api_settings)
     app.router.add_post("/api/settings", bridge.api_settings)
+    return app
+
+
+async def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    cfg = load_config()
+    BIG_CONTEXT_MODELS.update(cfg.get("big_context_models") or [])
+    os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
+    bridge = Bridge(cfg)
+
+    wsock = os.path.join(RUNTIME, "wrappers.sock")
+    hsock = os.path.join(RUNTIME, "hooks.sock")
+    for p in (wsock, hsock):
+        if os.path.exists(p):
+            os.unlink(p)
+    wrapper_server = await asyncio.start_unix_server(bridge.handle_wrapper, path=wsock)
+    os.chmod(wsock, 0o600)
+
+    hook_runner = web.AppRunner(make_hook_app(bridge), access_log=None)
+    await hook_runner.setup()
+    await web.UnixSite(hook_runner, hsock).start()
+    os.chmod(hsock, 0o600)
+
+    app = make_app(bridge)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     await web.TCPSite(runner, cfg["host"], cfg["port"]).start()

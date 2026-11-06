@@ -154,3 +154,14 @@ detail` or `diff, add, del`} on permission and `qid, options` on questions),
 Config (`~/.config/claude-mobile/config.json`): `keep_awake` (`working`|`always`|`off`),
 `keep_awake_waiting_minutes` (120), `keep_awake_grace_seconds` (180), and optionally
 `terminal`, a command prefix such as `["foot", "-e"]` if the default launcher doesn't suit.
+
+## Tests
+
+```bash
+cd bridge && uv run pytest     # the bridge's suite: offline, a few seconds
+```
+
+`bridge/tests/` runs against temp dirs only: HOME and the XDG dirs point into a sandbox,
+`gh`, `git`, terminals and `systemd-inhibit` are faked, and the wrapper protocol is driven
+by a fake wrapper over a real unix socket. It never touches the running bridge,
+`~/.claude` or `~/.config`.
