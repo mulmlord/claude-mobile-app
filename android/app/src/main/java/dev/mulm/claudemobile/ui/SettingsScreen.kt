@@ -323,7 +323,7 @@ private fun AppSection() {
 
 /** claude.ai-style segmented control: ink fill for the chosen option. */
 @Composable
-private fun Segmented(options: List<Pair<String, String>>, selected: String?, enabled: Boolean, onPick: (String) -> Unit) {
+internal fun Segmented(options: List<Pair<String, String>>, selected: String?, enabled: Boolean, onPick: (String) -> Unit) {
     val c = Claude.colors
     Row(
         Modifier.fillMaxWidth().background(c.soft, RoundedCornerShape(12.dp)).padding(3.dp),

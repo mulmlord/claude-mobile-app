@@ -237,6 +237,9 @@ class BridgeClient(private val prefs: Prefs) {
             }
         }
 
+    /** Plain JSON call for features with their own client (GitHub). */
+    suspend fun api(path: String, body: JSONObject? = null): JSONObject = call(path, body)
+
     suspend fun sendText(sid: String, text: String) = call("/api/sessions/$sid/send", JSONObject().put("text", text))
 
     suspend fun keys(sid: String, vararg keys: String) =
@@ -288,9 +291,10 @@ class BridgeClient(private val prefs: Prefs) {
     suspend fun projects(): List<Project> = Project.list(call("/api/projects").optJSONArray("projects"))
 
     /** Opens a terminal on the laptop with a new (or resumed) session; returns its id once it connects. */
-    suspend fun spawn(cwd: String, resume: String? = null): String? {
+    suspend fun spawn(cwd: String, resume: String? = null, prompt: String? = null): String? {
         val body = JSONObject().put("cwd", cwd)
         if (resume != null) body.put("resume", resume)
+        if (!prompt.isNullOrBlank()) body.put("prompt", prompt)
         val o = call("/api/spawn", body)
         return if (o.isNull("sid")) null else o.optString("sid").ifBlank { null }
     }

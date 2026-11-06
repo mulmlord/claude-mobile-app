@@ -26,7 +26,7 @@ import time
 
 from aiohttp import WSMsgType, web
 
-from . import launcher
+from . import github, launcher
 from .screen import Screen
 from .transcript import Transcript
 
@@ -210,6 +210,7 @@ class Bridge:
         self.early_hooks: dict[str, list] = collections.defaultdict(list)
         self.notified: dict[tuple, float] = {}
         self.history = launcher.History()
+        self.github = github.GitHub(self.history)
         self.awake = launcher.Awake(cfg)
         self.spawns: dict[str, asyncio.Future] = {}
         self.app_cache: tuple | None = None  # (metadata mtime, info, apk path)
@@ -507,6 +508,8 @@ class Bridge:
                         self.remove(s)
                 except Exception:
                     log.exception("tick failed for %s", s.id)
+            if n % 150 == 1:
+                await asyncio.to_thread(self.github.local)  # repo of each session, for the chat header
             if n % 25 == 0 and self.clients:
                 # A new build appeared (e.g. Claude just rebuilt the app): tell the phones.
                 before = self.app_cache[1] if self.app_cache else None
@@ -531,7 +534,12 @@ class Bridge:
 
     def sessions_msg(self) -> dict:
         ss = sorted(self.sessions.values(), key=lambda s: s.started)
-        return {"t": "sessions", "sessions": [s.summary() for s in ss],
+        sessions = []
+        for s in ss:
+            d = s.summary()
+            d["repo"] = self.github.repo_for_cwd(s.cwd)
+            sessions.append(d)
+        return {"t": "sessions", "sessions": sessions,
                 "awake": self.awake.active, "keep_awake": self.awake.mode}
 
     async def broadcast_sessions(self):
@@ -688,6 +696,7 @@ class Bridge:
     async def api_spawn(self, request):
         body = await request.json()
         resume = body.get("resume") or None
+        prompt = str(body.get("prompt") or "").strip()[:20_000] or None
         cwd = os.path.realpath(os.path.expanduser(str(body.get("cwd") or "")))
         if resume:
             if not launcher.UUID_RE.match(str(resume)):
@@ -707,7 +716,7 @@ class Bridge:
         fut = asyncio.get_running_loop().create_future()
         self.spawns[token] = fut
         try:
-            proc = await launcher.spawn(self.cfg, cwd, token, resume)
+            proc = await launcher.spawn(self.cfg, cwd, token, resume, prompt)
         except RuntimeError as e:
             self.spawns.pop(token, None)
             raise web.HTTPServiceUnavailable(text=str(e))
@@ -826,7 +835,7 @@ async def main():
     await web.UnixSite(hook_runner, hsock).start()
     os.chmod(hsock, 0o600)
 
-    app = web.Application(middlewares=[bridge.auth_mw], client_max_size=25 * 1024 * 1024)
+    app = web.Application(middlewares=[bridge.auth_mw, github.errors_mw], client_max_size=25 * 1024 * 1024)
     app.router.add_get("/api/health", bridge.api_health)
     app.router.add_get("/api/sessions", bridge.api_sessions)
     app.router.add_get("/api/sessions/{sid}/items", bridge.api_items)
@@ -838,6 +847,7 @@ async def main():
     app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
+    bridge.github.routes(app)
     app.router.add_get("/api/app", bridge.api_app)
     app.router.add_get("/api/app/apk", bridge.api_app_apk)
     app.router.add_post("/api/spawn", bridge.api_spawn)

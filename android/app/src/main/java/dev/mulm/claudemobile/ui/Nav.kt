@@ -10,6 +10,10 @@ sealed interface Route {
     data class Chat(val sid: String) : Route
     data class Settings(val url: String? = null, val token: String? = null) : Route
     data object NewSession : Route
+    data object GitHub : Route
+    data class Repo(val repo: String, val tab: String = "prs") : Route
+    data class Pr(val repo: String, val number: Int) : Route
+    data class Issue(val repo: String, val number: Int) : Route
 }
 
 object Nav {
@@ -17,17 +21,31 @@ object Nav {
     fun go(r: Route) {
         route.value = r
     }
+
+    /** One level up: a PR or issue goes back to its repository, a repository to the list. */
+    fun back() {
+        route.value = when (val r = route.value) {
+            is Route.Pr -> Route.Repo(r.repo, "prs")
+            is Route.Issue -> Route.Repo(r.repo, "issues")
+            is Route.Repo -> Route.GitHub
+            else -> Route.Sessions
+        }
+    }
 }
 
 @Composable
 fun AppRoot() {
     val route by Nav.route
-    BackHandler(enabled = route !is Route.Sessions) { Nav.go(Route.Sessions) }
+    BackHandler(enabled = route !is Route.Sessions) { Nav.back() }
     when (val r = route) {
         Route.Sessions -> SessionsScreen()
         is Route.Chat -> ChatScreen(r.sid)
         is Route.Settings -> SettingsScreen(r)
         Route.NewSession -> NewSessionScreen()
+        Route.GitHub -> GitHubScreen()
+        is Route.Repo -> RepoScreen(r.repo, r.tab)
+        is Route.Pr -> PrScreen(r.repo, r.number)
+        is Route.Issue -> IssueScreen(r.repo, r.number)
     }
 }
 

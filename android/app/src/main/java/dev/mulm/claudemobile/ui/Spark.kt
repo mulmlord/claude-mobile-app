@@ -111,3 +111,14 @@ val MicIcon: ImageVector by lazy {
         moveTo(12f, 17.5f); lineTo(12f, 21f)
     }
 }
+
+/** A git branch: two commits on a line and one branching off (generic, not a brand mark). */
+val BranchIcon: ImageVector by lazy {
+    strokeIcon("Branch") {
+        moveTo(6f, 3.5f); arcTo(2f, 2f, 0f, true, true, 6f, 7.5f); arcTo(2f, 2f, 0f, true, true, 6f, 3.5f)
+        moveTo(6f, 16.5f); arcTo(2f, 2f, 0f, true, true, 6f, 20.5f); arcTo(2f, 2f, 0f, true, true, 6f, 16.5f)
+        moveTo(18f, 4.5f); arcTo(2f, 2f, 0f, true, true, 18f, 8.5f); arcTo(2f, 2f, 0f, true, true, 18f, 4.5f)
+        moveTo(6f, 7.5f); lineTo(6f, 16.5f)
+        moveTo(18f, 8.5f); curveTo(18f, 13f, 7f, 11f, 6f, 16f)
+    }
+}

@@ -29,6 +29,14 @@ with push notifications when a session finishes, needs permission, or asks a que
   Claude reads it. The chat header shows how full the context is (models seen past 200k
   tokens count as 1M, remembered in `big_context_models`).
 * **Appearance:** Settings → System / Light / Dark.
+* **GitHub** (branch icon on the home screen, or in a chat whose folder is a clone) runs
+  through the laptop's signed-in `gh`, so the phone holds no GitHub token. Repositories
+  with open PR/issue counts and CI state; per repo: pull requests (checks, per-file diffs,
+  conversation; comment, review, merge with squash/merge/rebase, close, mark ready),
+  issues (comment, close/reopen, create), Actions runs (failed-step log, re-run failed
+  jobs) and the clone on the laptop (status, recent commits, pull, push, open a PR, clone
+  if missing). "Work on it" / "Ask Claude to review" / "Ask Claude to fix it" start a
+  session in the clone with an editable first message.
 * **Updates without USB.** The bridge offers the newest APK Gradle built in this repo
   (`android/app/build/outputs/apk/debug`, from `output-metadata.json`; `apk_dir` in the
   config overrides it). When its versionCode is higher, the app shows "Update ready";
@@ -96,7 +104,8 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`, WebSocket `/api/ws`,
 `GET /api/projects`, `POST /api/spawn {"cwd", "resume"?}`, `GET|POST /api/settings {"keep_awake"}`,
-`POST /api/sessions/{id}/upload` (image body), `GET /api/app`, `GET /api/app/apk`.
+`POST /api/sessions/{id}/upload` (image body), `GET /api/app`, `GET /api/app/apk`,
+`/api/gh/repos`, `/api/gh/{owner}/{name}/{prs,issues,runs,local}[/…]` (see `bridge/claude_bridge/github.py`).
 
 Config (`~/.config/claude-mobile/config.json`): `keep_awake` (`working`|`always`|`off`),
 `keep_awake_waiting_minutes` (120), `keep_awake_grace_seconds` (180), and optionally

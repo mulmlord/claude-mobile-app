@@ -37,6 +37,8 @@ data class SessionInfo(
     /** Tokens in the last request, and the model's context window. */
     val context: Long = 0,
     val contextMax: Long = 200_000,
+    /** owner/name when the session's folder is a GitHub clone. */
+    val repo: String? = null,
 ) {
     val needsYou: Boolean get() = status == "permission" || status == "question"
 
@@ -49,6 +51,7 @@ data class SessionInfo(
             connected = o.optBoolean("connected", true),
             questions = Question.list(o.optJSONArray("questions")),
             context = o.optLong("context"), contextMax = o.optLong("context_max", 200_000).coerceAtLeast(1),
+            repo = if (o.isNull("repo")) null else o.optString("repo").ifBlank { null },
         )
     }
 }

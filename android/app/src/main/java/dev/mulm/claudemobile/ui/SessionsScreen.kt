@@ -103,6 +103,9 @@ fun SessionsScreen() {
                 colors = claudeTopBarColors(),
                 title = { Text("Claude", fontFamily = Serif, fontWeight = FontWeight.Medium, fontSize = 22.sp) },
                 actions = {
+                    if (conn == Conn.Connected) {
+                        IconButton(onClick = { Nav.go(Route.GitHub) }) { Icon(BranchIcon, "GitHub", Modifier.size(22.dp)) }
+                    }
                     IconButton(onClick = { Nav.go(Route.Settings()) }) { Icon(Icons.Filled.Settings, "Settings") }
                 },
             )

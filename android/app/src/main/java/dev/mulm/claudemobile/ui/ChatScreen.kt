@@ -192,6 +192,9 @@ fun ChatScreen(sid: String) {
                             }
                             Spacer(Modifier.width(4.dp))
                         }
+                        session?.repo?.let { repo ->
+                            IconButton(onClick = { Nav.go(Route.Repo(repo)) }) { Icon(BranchIcon, "GitHub", Modifier.size(20.dp), tint = c.muted) }
+                        }
                         IconButton(onClick = { showTerminal = !showTerminal }) {
                             Box(
                                 Modifier.size(34.dp).clip(RoundedCornerShape(9.dp))
@@ -361,7 +364,7 @@ private fun UserBubble(text: String) {
 }
 
 @Composable
-private fun AssistantText(text: String) {
+internal fun AssistantText(text: String) {
     val c = Claude.colors
     val body = ReplyStyle.copy(color = c.text)
     val heading = { size: Int, line: Int -> body.copy(fontSize = size.sp, lineHeight = line.sp, fontWeight = FontWeight.SemiBold) }
@@ -474,7 +477,7 @@ private fun ToolRow(item: Item) {
 }
 
 @Composable
-private fun DiffView(lines: List<String>) {
+internal fun DiffView(lines: List<String>) {
     val c = Claude.colors
     val addBg = c.success.copy(alpha = if (c.dark) 0.20f else 0.13f)
     val delBg = c.danger.copy(alpha = if (c.dark) 0.20f else 0.10f)

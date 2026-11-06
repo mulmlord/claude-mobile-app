@@ -170,7 +170,7 @@ def wrapper_path() -> str | None:
     return p if os.access(p, os.X_OK) else shutil.which("claude-mobile-wrap")
 
 
-async def spawn(cfg: dict, cwd: str, token: str, resume: str | None) -> asyncio.subprocess.Process:
+async def spawn(cfg: dict, cwd: str, token: str, resume: str | None, prompt: str | None = None) -> asyncio.subprocess.Process:
     env = desktop_env()
     if not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
         raise RuntimeError("No desktop session on the laptop to open a terminal in")
@@ -179,7 +179,9 @@ async def spawn(cfg: dict, cwd: str, token: str, resume: str | None) -> asyncio.
     if not term or not wrap:
         raise RuntimeError("No terminal emulator found on the laptop" if not term else "claude-mobile-wrap is not installed")
     argv = term + ["env", f"CLAUDE_MOBILE_SPAWN={token}", wrap] + (["--resume", resume] if resume else [])
-    log.info("spawn in %s: %s", cwd, " ".join(argv))
+    if prompt:
+        argv += ["--", prompt]  # first message; "--" keeps a prompt starting with "-" literal
+    log.info("spawn in %s: %s", cwd, " ".join(argv[:-1] if prompt else argv) + (" -- <prompt>" if prompt else ""))
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, start_new_session=True,
