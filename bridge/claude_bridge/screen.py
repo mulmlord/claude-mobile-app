@@ -138,3 +138,36 @@ class Screen:
             opts.append({"index": n, "key": nm.group(1) if nm else None,
                          "label": nm.group(2) if nm else label, "selected": j == i})
         return opts if len(opts) >= 2 else []
+
+
+def match_option(opts: list[dict], label: str) -> dict | None:
+    """The dialog option meant by `label` (an AskUserQuestion option as the transcript
+    has it), or None when nothing fits or it's ambiguous: a wrong pick is worse than
+    asking the phone to open the chat.
+
+    Exact first, then ignoring case/spacing, then by prefix: the screen can show a
+    long label cut short ("…") or wrapped onto the next line, or with more text after it."""
+    def norm(s: str) -> str:
+        return " ".join(s.split()).rstrip("…").strip().casefold()
+
+    for o in opts:
+        if o["label"] == label:
+            return o
+    want = norm(label)
+    if not want:
+        return None
+    labels = [(o, norm(o["label"])) for o in opts]
+    same = [o for o, n in labels if n == want]
+    if same:
+        return same[0] if len(same) == 1 else None
+    # Cut short on screen: the longest shown part of the label is the option meant
+    # ("Use Redis" and a wrapped "Use Redis with a" for "Use Redis with a cache").
+    cut = [(o, n) for o, n in labels if n and want.startswith(n)]
+    if cut:
+        longest = max(len(n) for _, n in cut)
+        cut = [o for o, n in cut if len(n) == longest]
+        return cut[0] if len(cut) == 1 else None
+    # More text after the label on the same line; only at a word break, so "Use A"
+    # never picks "Use AB".
+    more = [o for o, n in labels if n.startswith(want) and not n[len(want)].isalnum()]
+    return more[0] if len(more) == 1 else None

@@ -8,11 +8,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/** Handles "Reply" / "Allow" / "Deny" straight from a notification. */
+/** Handles "Reply" / "Allow" / "Deny" / a question's option straight from a notification. */
 class ActionReceiver : BroadcastReceiver() {
     companion object {
         const val REPLY = "dev.mulm.claudemobile.REPLY"
         const val ANSWER = "dev.mulm.claudemobile.ANSWER"
+        const val CHOOSE = "dev.mulm.claudemobile.CHOOSE"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -33,6 +34,13 @@ class ActionReceiver : BroadcastReceiver() {
                         val choice = intent.getStringExtra("choice") ?: "yes"
                         bridge.answer(sid, choice)
                         Notifier.confirm(context, sid, if (choice == "no") "Denied" else "Allowed", error = false)
+                    }
+                    CHOOSE -> {
+                        val label = intent.getStringExtra("choice").orEmpty()
+                        if (label.isNotBlank()) {
+                            bridge.choose(sid, label, intent.getStringExtra(Notifier.EXTRA_QID))
+                            Notifier.confirm(context, sid, "Answered: ${label.take(60)}", error = false)
+                        }
                     }
                 }
             } catch (e: Exception) {

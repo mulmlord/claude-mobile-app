@@ -27,6 +27,8 @@ class BridgeService : Service() {
     private val app get() = application as App
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private val previous = HashMap<String, String>()
+    /** Kind of the notification last posted per session (both collectors run on Main). */
+    private val shown = HashMap<String, String>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -43,17 +45,22 @@ class BridgeService : Service() {
                 if (!app.prefs.notifyEnabled) return@collect
                 if (ev.kind == "done" && app.visibleSession == ev.sid) return@collect
                 Notifier.show(this@BridgeService, ev)
+                shown[ev.sid] = ev.kind
             }
         }
         scope.launch {
             // Dismiss "needs permission"/"question" notifications once answered elsewhere
-            // (e.g. at the laptop), and when a session goes away.
+            // (e.g. at the laptop), and when a session goes away. Not when the one up is
+            // already for the new status: an AskUserQuestion can show as "permission" for a
+            // moment, and its question notification arrives before the status does.
             bridge.sessions.collect { list ->
                 val now = list.associate { it.id to it.status }
                 for ((sid, old) in previous) {
                     val cur = now[sid]
-                    if ((old == "permission" || old == "question") && cur != old) Notifier.cancel(this@BridgeService, sid)
-                    if (cur == null) Notifier.cancel(this@BridgeService, sid)
+                    if ((old == "permission" || old == "question") && cur != old && shown[sid] != cur || cur == null) {
+                        Notifier.cancel(this@BridgeService, sid)
+                        shown.remove(sid)
+                    }
                 }
                 previous.clear()
                 previous.putAll(now)

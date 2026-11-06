@@ -27,7 +27,7 @@ import time
 from aiohttp import WSMsgType, web
 
 from . import github, launcher
-from .screen import Screen
+from .screen import Screen, match_option
 from .transcript import Transcript
 
 log = logging.getLogger("claude-bridge")
@@ -101,6 +101,35 @@ def plain(md: str, n: int = 280) -> str:
     s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+NOTIFY_DIFF_LINES = 40
+
+
+def tool_preview(it: dict) -> dict:
+    """The tool waiting for permission, for a notification you can decide from:
+    {"name", "summary", "detail"} or, for file edits, {"name", "summary", "diff", "add", "del"}.
+    Kept small since notifications are held and replayed to reconnecting phones."""
+    def clip(s: str, n: int) -> str:
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    t = {"name": it.get("name", ""), "summary": it.get("summary") or ""}
+    diff = it.get("diff")
+    if diff is None:
+        # the diff already shows an edit; for anything else (a Bash command...) the detail is the point
+        t["detail"] = clip(it.get("detail") or "", 1500)
+        return t
+    lines, more = list(diff), 0
+    if lines and re.fullmatch(r"@\d+ more lines", lines[-1]):
+        more = int(lines.pop()[1:].split()[0])
+    if len(lines) > NOTIFY_DIFF_LINES:
+        more += len(lines) - NOTIFY_DIFF_LINES
+        del lines[NOTIFY_DIFF_LINES:]
+    while lines and lines[-1] == "@":
+        lines.pop()
+    t["diff"] = [clip(ln, 200) for ln in lines] + ([f"@{more} more lines"] if more else [])
+    t["add"], t["del"] = it.get("add", 0), it.get("del", 0)
+    return t
 
 
 # Models seen using more than 200k tokens of context have the 1M window. Learned
@@ -398,8 +427,9 @@ class Bridge:
             msg = data.get("message") or ""
             ntype = data.get("notification_type") or ""
             if ntype == "permission_prompt" or (not ntype and "permission" in msg.lower()):
-                changed = s.set_status("permission", msg)
-                asyncio.get_running_loop().create_task(self.notify_permission(s, msg))
+                if not self.asking(s):  # AskUserQuestion's dialog sends this hook too
+                    changed = s.set_status("permission", msg)
+                    asyncio.get_running_loop().create_task(self.notify_permission(s, msg))
             elif ntype == "elicitation_dialog":
                 changed = s.set_status("question", msg)
                 self.notify(s, "question", f"{s.title}", msg or "Claude has a question")
@@ -415,7 +445,10 @@ class Bridge:
         recent = time.time() - s.last_local_input < self.cfg["quiet_after_local_input"]
         return recent and s.last_local_input >= s.last_remote_input
 
-    def notify(self, s: Session, kind: str, title: str, body: str, dedupe: str | None = None):
+    def notify(self, s: Session, kind: str, title: str, body: str, dedupe: str | None = None,
+               extra: dict | None = None):
+        """`extra`: optional structured fields for newer apps; `body` alone stays a
+        complete notification for older ones."""
         if self.quiet(s):
             log.info("notify suppressed (local activity) %s %s", s.id, kind)
             return
@@ -424,7 +457,7 @@ class Bridge:
             return
         self.notified[key] = time.time()
         self.next_notify_id += 1
-        n = {"t": "notify", "id": self.next_notify_id, "sid": s.id, "kind": kind,
+        n = {**(extra or {}), "t": "notify", "id": self.next_notify_id, "sid": s.id, "kind": kind,
              "title": title, "body": body, "ts": time.time()}
         self.notifications.append(n)
         log.info("notify %s %s: %s", s.id, kind, body[:80])
@@ -452,15 +485,28 @@ class Bridge:
         await self.poll_transcript(s)
         if s.status != "permission":
             return
-        detail = ""
+        it = self.pending_tool(s)
+        detail = f"{it['name']}: {it.get('detail') or it.get('summary')}" if it else ""
+        body = msg + (f"\n{detail[:300]}" if detail else "")
+        self.notify(s, "permission", s.title, body, dedupe=f"perm:{detail or msg}",
+                    extra={"tool": tool_preview(it)} if it else None)
+
+    def pending_tool(self, s: Session) -> dict | None:
+        """The newest tool call still without a result: what a permission prompt is about."""
         if s.transcript:
             for iid in reversed(s.transcript.order[-10:]):
                 it = s.transcript.items[iid]
                 if it["kind"] == "tool" and it.get("status") == "running":
-                    detail = f"{it['name']}: {it.get('detail') or it.get('summary')}"
-                    break
-        body = msg + (f"\n{detail[:300]}" if detail else "")
-        self.notify(s, "permission", s.title, body, dedupe=f"perm:{detail or msg}")
+                    return it
+        return None
+
+    def asking(self, s: Session) -> bool:
+        """The dialog up is AskUserQuestion's. Claude Code announces it with the same
+        "permission_prompt" hook as tool permissions, but the question notification
+        (with its options) is the one to keep; Allow/Deny can't answer it."""
+        t, it = s.transcript, self.pending_tool(s)
+        return bool(s.status == "question" and t and t.pending_question and it
+                    and t.tool_items.get(t.pending_question) == it["id"])
 
     # ---- periodic work -------------------------------------------------------
     async def poll_transcript(self, s: Session):
@@ -481,7 +527,13 @@ class Bridge:
             q = qs[0]["question"] if qs else "Claude has a question"
             s.set_status("question", q)
             opts = " · ".join(o["label"] for o in (qs[0]["options"] if qs else []))
-            self.notify(s, "question", s.title, q + (f"\n{opts}" if opts else ""), dedupe=f"q:{t.pending_question}")
+            extra = {"qid": t.pending_question}
+            # One tap answers only a lone single-choice question; with several questions
+            # or multi-select the dialog needs more than that, so the phone opens the chat.
+            if len(qs) == 1 and not qs[0]["multiSelect"]:
+                extra["options"] = [o["label"] for o in qs[0]["options"] if o["label"]]
+            self.notify(s, "question", s.title, q + (f"\n{opts}" if opts else ""), dedupe=f"q:{t.pending_question}",
+                        extra=extra)
         await self.push_items(s, items=items, reset=reset)
 
     async def push_items(self, s: Session, items: list | None = None, reset: bool = False):
@@ -620,6 +672,28 @@ class Bridge:
         index = int((await request.json()).get("index", -1))
         opt = await self.select_option(s, index)
         return web.json_response({"ok": True, "picked": opt})
+
+    async def api_choose(self, request):
+        """Pick a dialog option by label (AskUserQuestion buttons in a notification): the
+        phone knows the question's labels, not their order on the terminal. With "qid"
+        it refuses once that question is no longer the one waiting, so a stale button
+        can't answer whatever dialog came next."""
+        s = self.get_session(request)
+        body = await request.json()
+        label = str(body.get("label") or "").strip()
+        if not label:
+            raise web.HTTPBadRequest(text="label missing")
+        qid = body.get("qid")
+        if qid and (not s.transcript or s.transcript.pending_question != qid):
+            raise web.HTTPConflict(text="That question was already answered")
+        opts = s.screen.dialog_options()
+        if not opts:
+            raise web.HTTPConflict(text="No question is showing in this session")
+        opt = match_option(opts, label)
+        if opt is None:
+            raise web.HTTPConflict(text=f"“{label}” isn't an option on screen; open the chat to answer")
+        picked = await self.select_option(s, opt["index"])
+        return web.json_response({"ok": True, "picked": picked})
 
     async def api_answer(self, request):
         """Answer a permission dialog by meaning: choice = yes | always | no."""
@@ -844,6 +918,7 @@ async def main():
     app.router.add_post("/api/sessions/{sid}/keys", bridge.api_keys)
     app.router.add_post("/api/sessions/{sid}/answer", bridge.api_answer)
     app.router.add_post("/api/sessions/{sid}/select", bridge.api_select)
+    app.router.add_post("/api/sessions/{sid}/choose", bridge.api_choose)
     app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)

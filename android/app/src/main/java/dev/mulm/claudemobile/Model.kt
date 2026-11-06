@@ -102,9 +102,48 @@ data class ScreenState(val sid: String, val lines: List<String>, val cols: Int, 
     }
 }
 
-data class NotifyEvent(val id: Long, val sid: String, val kind: String, val title: String, val body: String) {
+/** The tool a permission prompt is about: a diff for file edits, otherwise its detail (e.g. the command). */
+data class ToolPreview(
+    val name: String,
+    val summary: String,
+    val detail: String,
+    /** Same line format as [Item.diff]; null when the tool doesn't edit a file. */
+    val diff: List<String>?,
+    val added: Int,
+    val removed: Int,
+) {
     companion object {
-        fun from(o: JSONObject) = NotifyEvent(o.optLong("id"), o.s("sid"), o.s("kind"), o.s("title"), o.s("body"))
+        fun from(o: JSONObject?): ToolPreview? = o?.let {
+            ToolPreview(
+                it.s("name"), it.s("summary"), it.s("detail"),
+                it.optJSONArray("diff")?.let { a -> (0 until a.length()).map { i -> a.optString(i) } },
+                it.optInt("add"), it.optInt("del"),
+            )
+        }
+    }
+}
+
+data class NotifyEvent(
+    val id: Long,
+    val sid: String,
+    val kind: String,
+    val title: String,
+    /** Complete plain text; the fields below are extras that older bridges don't send. */
+    val body: String,
+    /** permission: the tool waiting for approval. */
+    val tool: ToolPreview? = null,
+    /** question: option labels that one tap can answer, and the question they belong to. */
+    val options: List<String> = emptyList(),
+    val qid: String = "",
+) {
+    companion object {
+        fun from(o: JSONObject) = NotifyEvent(
+            o.optLong("id"), o.s("sid"), o.s("kind"), o.s("title"), o.s("body"),
+            tool = ToolPreview.from(o.optJSONObject("tool")),
+            options = o.optJSONArray("options")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }
+                ?: emptyList(),
+            qid = o.s("qid"),
+        )
     }
 }
 

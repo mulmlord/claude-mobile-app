@@ -55,9 +55,14 @@ with push notifications when a session finishes, needs permission, or asks a que
   closing the lid doesn't suspend mid-task. Settings → "Keep the laptop awake" switches
   between *While working*, *Always* (use before leaving home) and *Off*.
 * **Notifications** come over a persistent socket held by a foreground service (no Google
-  push, no accounts). Permission notifications have Allow/Deny, finished ones have an
-  inline Reply. They're muted while you're typing into that session at the laptop
-  (`quiet_after_local_input` in `~/.config/claude-mobile/config.json`, default 45 s).
+  push, no accounts). Permission notifications have Allow/Deny and say what's waiting
+  ("Edit · app/src/x.kt (+3 −1)"); expanded, they show a compact red/green diff of the
+  edit or the Bash command, so you can decide from the shade. Questions (AskUserQuestion
+  with a single single-choice question) get up to three of their options as buttons; the
+  bridge picks the matching option on screen by its label and refuses if that question
+  was already answered. Finished ones have an inline Reply. They're muted while you're
+  typing into that session at the laptop (`quiet_after_local_input` in
+  `~/.config/claude-mobile/config.json`, default 45 s).
 
 ## Setup
 
@@ -102,7 +107,10 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 
 `GET /api/sessions`, `GET /api/sessions/{id}/items`, `GET /api/sessions/{id}/screen`,
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
-`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`, WebSocket `/api/ws`,
+`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`,
+`POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
+WebSocket `/api/ws` (`notify` events: `id, sid, kind, title, body`, plus `tool` {`name, summary,
+detail` or `diff, add, del`} on permission and `qid, options` on questions),
 `GET /api/projects`, `POST /api/spawn {"cwd", "resume"?}`, `GET|POST /api/settings {"keep_awake"}`,
 `POST /api/sessions/{id}/upload` (image body), `GET /api/app`, `GET /api/app/apk`,
 `/api/gh/repos`, `/api/gh/{owner}/{name}/{prs,issues,runs,local}[/…]` (see `bridge/claude_bridge/github.py`).
