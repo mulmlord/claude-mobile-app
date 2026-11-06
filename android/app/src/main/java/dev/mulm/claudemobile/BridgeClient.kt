@@ -55,6 +55,9 @@ class BridgeClient(private val prefs: Prefs) {
     /** working | always | off, as configured on the bridge. */
     private val _keepAwake = MutableStateFlow<String?>(null)
     val keepAwake: StateFlow<String?> = _keepAwake
+    /** Newest app build on the laptop, for Settings > Update app. */
+    private val _appBuild = MutableStateFlow<AppBuild?>(null)
+    val appBuild: StateFlow<AppBuild?> = _appBuild
     private val _notifications = MutableSharedFlow<NotifyEvent>(extraBufferCapacity = 64)
     val notifications: SharedFlow<NotifyEvent> = _notifications
 
@@ -140,6 +143,7 @@ class BridgeClient(private val prefs: Prefs) {
             when (o.optString("t")) {
                 "hello" -> {
                     _host.value = o.optString("host")
+                    _appBuild.value = AppBuild.from(o.optJSONObject("app"))
                     // First ever connection: start counting from now instead of replaying history.
                     if (prefs.lastNotifyId == 0L) prefs.lastNotifyId = o.optLong("notify_id")
                 }
@@ -150,6 +154,7 @@ class BridgeClient(private val prefs: Prefs) {
                     if (o.has("keep_awake")) _keepAwake.value = o.optString("keep_awake")
                 }
                 "items" -> mergeItems(o)
+                "app" -> _appBuild.value = AppBuild.from(o.optJSONObject("app"))
                 "screen" -> {
                     val st = ScreenState.from(o)
                     if (st.sid == screenSub) _screen.value = st
@@ -250,6 +255,33 @@ class BridgeClient(private val prefs: Prefs) {
             val text = r.body.string()
             if (!r.isSuccessful) throw BridgeError(text.ifBlank { "Upload failed (HTTP ${r.code})" })
             JSONObject(text).optString("path")
+        }
+    }
+
+    /** Streams the laptop's APK into [dest], reporting progress 0..1. */
+    suspend fun downloadApk(dest: java.io.File, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(prefs.url + "/api/app/apk").header("Authorization", "Bearer " + prefs.token).build()
+        http.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) throw BridgeError(r.body.string().ifBlank { "Download failed (HTTP ${r.code})" })
+            val total = r.body.contentLength().coerceAtLeast(1)
+            var done = 0L
+            var shown = -1
+            dest.outputStream().use { out ->
+                r.body.byteStream().use { inp ->
+                    val buf = ByteArray(1 shl 16)
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        val pct = (done * 100 / total).toInt()
+                        if (pct != shown) {
+                            shown = pct
+                            onProgress(pct / 100f)
+                        }
+                    }
+                }
+            }
         }
     }
 

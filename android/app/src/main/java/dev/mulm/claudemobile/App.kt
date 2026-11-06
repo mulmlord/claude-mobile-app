@@ -20,6 +20,7 @@ class App : Application() {
         prefs = Prefs(this)
         bridge = BridgeClient(prefs)
         Notifier.createChannels(this)
+        Updater.cleanup(this)
     }
 
     companion object {

@@ -29,6 +29,11 @@ with push notifications when a session finishes, needs permission, or asks a que
   Claude reads it. The chat header shows how full the context is (models seen past 200k
   tokens count as 1M, remembered in `big_context_models`).
 * **Appearance:** Settings → System / Light / Dark.
+* **Updates without USB.** The bridge offers the newest APK Gradle built in this repo
+  (`android/app/build/outputs/apk/debug`, from `output-metadata.json`; `apk_dir` in the
+  config overrides it). When its versionCode is higher, the app shows "Update ready";
+  Settings → App downloads it over Tailscale, checks the sha256 and hands it to Android's
+  installer. Android asks once to allow installs from Claude Mobile.
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
   live terminal plus Esc/arrows/Enter for anything else.
@@ -90,7 +95,8 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `GET /api/sessions`, `GET /api/sessions/{id}/items`, `GET /api/sessions/{id}/screen`,
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`, WebSocket `/api/ws`,
-`GET /api/projects`, `POST /api/spawn {"cwd", "resume"?}`, `GET|POST /api/settings {"keep_awake"}`.
+`GET /api/projects`, `POST /api/spawn {"cwd", "resume"?}`, `GET|POST /api/settings {"keep_awake"}`,
+`POST /api/sessions/{id}/upload` (image body), `GET /api/app`, `GET /api/app/apk`.
 
 Config (`~/.config/claude-mobile/config.json`): `keep_awake` (`working`|`always`|`off`),
 `keep_awake_waiting_minutes` (120), `keep_awake_grace_seconds` (180), and optionally

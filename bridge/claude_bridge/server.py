@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import glob
+import hashlib
 import hmac
 import json
 import logging
@@ -35,6 +36,9 @@ RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getu
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "claude-mobile")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 STATE_FILE = os.path.join(RUNTIME, "state.json")
+# Where Gradle puts the debug APK of the app in this repo (config "apk_dir" overrides).
+APK_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "..", "android", "app", "build", "outputs", "apk", "debug"))
 UPLOADS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "claude-mobile", "uploads")
 
 KEYS = {
@@ -208,6 +212,7 @@ class Bridge:
         self.history = launcher.History()
         self.awake = launcher.Awake(cfg)
         self.spawns: dict[str, asyncio.Future] = {}
+        self.app_cache: tuple | None = None  # (metadata mtime, info, apk path)
         try:
             with open(STATE_FILE) as f:
                 self.saved_state = json.load(f)
@@ -502,6 +507,13 @@ class Bridge:
                         self.remove(s)
                 except Exception:
                     log.exception("tick failed for %s", s.id)
+            if n % 25 == 0 and self.clients:
+                # A new build appeared (e.g. Claude just rebuilt the app): tell the phones.
+                before = self.app_cache[1] if self.app_cache else None
+                b = await asyncio.to_thread(self.app_build)
+                if b and b[0] != before:
+                    for c in list(self.clients):
+                        await c.send({"t": "app", "app": b[0]})
             if n % 5 == 0:
                 try:
                     self.dirty |= await self.awake.update(list(self.sessions.values()))
@@ -625,6 +637,44 @@ class Bridge:
     async def api_screen(self, request):
         return web.json_response(self.screen_msg(self.get_session(request)))
 
+    # ---- app updates -----------------------------------------------------------
+    def app_build(self) -> tuple[dict, str] | None:
+        """Newest built APK, from Gradle's output-metadata.json, with a sha256 to verify the download."""
+        d = self.cfg.get("apk_dir") or APK_DIR
+        meta = os.path.join(d, "output-metadata.json")
+        try:
+            mtime = os.stat(meta).st_mtime
+        except OSError:
+            return None
+        if self.app_cache and self.app_cache[0] == mtime:
+            return self.app_cache[1], self.app_cache[2]
+        try:
+            with open(meta) as f:
+                el = json.load(f)["elements"][0]
+            apk = os.path.join(d, el["outputFile"])
+            h = hashlib.sha256()
+            with open(apk, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            info = {"versionCode": int(el["versionCode"]), "versionName": el.get("versionName", ""),
+                    "size": os.path.getsize(apk), "sha256": h.hexdigest()}
+        except (OSError, ValueError, KeyError, IndexError):
+            return None
+        self.app_cache = (mtime, info, apk)
+        return info, apk
+
+    async def api_app(self, request):
+        b = await asyncio.to_thread(self.app_build)
+        if not b:
+            raise web.HTTPNotFound(text="no app build on the laptop")
+        return web.json_response(b[0])
+
+    async def api_app_apk(self, request):
+        b = await asyncio.to_thread(self.app_build)
+        if not b:
+            raise web.HTTPNotFound(text="no app build on the laptop")
+        return web.FileResponse(b[1], headers={"Content-Type": "application/vnd.android.package-archive"})
+
     # ---- starting sessions from the phone -----------------------------------
     def live_by_session_id(self) -> dict[str, str]:
         return {s.claude_session_id: s.id for s in self.sessions.values() if s.claude_session_id and s.writer}
@@ -718,7 +768,9 @@ class Bridge:
         self.clients.add(c)
         log.info("client connected (%d)", len(self.clients))
         try:
-            await c.send({"t": "hello", "host": socket.gethostname(), "notify_id": self.next_notify_id})
+            b = await asyncio.to_thread(self.app_build)
+            await c.send({"t": "hello", "host": socket.gethostname(), "notify_id": self.next_notify_id,
+                          "app": b[0] if b else None})
             await c.send(self.sessions_msg())
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -786,6 +838,8 @@ async def main():
     app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
+    app.router.add_get("/api/app", bridge.api_app)
+    app.router.add_get("/api/app/apk", bridge.api_app_apk)
     app.router.add_post("/api/spawn", bridge.api_spawn)
     app.router.add_get("/api/settings", bridge.api_settings)
     app.router.add_post("/api/settings", bridge.api_settings)

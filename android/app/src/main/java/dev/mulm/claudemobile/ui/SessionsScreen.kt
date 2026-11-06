@@ -46,6 +46,9 @@ import dev.mulm.claudemobile.Conn
 import dev.mulm.claudemobile.SessionInfo
 import kotlinx.coroutines.delay
 import java.util.Calendar
+import dev.mulm.claudemobile.Updater
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.remember
 
 @Composable
 fun rememberNow(): Long {
@@ -76,6 +79,9 @@ fun SessionsScreen() {
     val error by bridge.error.collectAsState()
     val sessions by bridge.sessions.collectAsState()
     val awake by bridge.awake.collectAsState()
+    val build by bridge.appBuild.collectAsState()
+    val ctx = LocalContext.current
+    val installed = remember { Updater.installedCode(ctx) }
     val now = rememberNow()
     val c = Claude.colors
 
@@ -160,6 +166,20 @@ fun SessionsScreen() {
                             }
                             Spacer(Modifier.size(10.dp))
                             ConnLine(conn, host, error, awake)
+                            build?.takeIf { it.versionCode > installed }?.let { b ->
+                                Surface(
+                                    onClick = { Nav.go(Route.Settings()) }, shape = RoundedCornerShape(12.dp),
+                                    color = c.accent.copy(alpha = 0.12f), modifier = Modifier.padding(top = 14.dp),
+                                ) {
+                                    Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Spark(size = 14.dp)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Update ready: ${b.versionName}", fontSize = 13.5.sp, color = c.text)
+                                        Spacer(Modifier.width(10.dp))
+                                        Text("Install ›", fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = c.accentButton)
+                                    }
+                                }
+                            }
                         }
                     }
                     item(key = "label") {

@@ -60,6 +60,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import dev.mulm.claudemobile.Updater
+import dev.mulm.claudemobile.UpdateState
+import androidx.compose.material3.LinearProgressIndicator
 
 @SuppressLint("BatteryLife")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,6 +104,13 @@ fun SettingsScreen(route: Route.Settings) {
             Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            val build by app.bridge.appBuild.collectAsState()
+            val updating by Updater.state.collectAsState()
+            val installedCode = remember { Updater.installedCode(ctx) }
+            val newer = build.let { it != null && it.versionCode > installedCode }
+            val updateFirst = newer || updating !is UpdateState.Idle
+            if (updateFirst) AppSection()
+
             if (route.url != null) {
                 Notice(c.accent.copy(alpha = 0.12f), c.accent.copy(alpha = 0.35f)) {
                     Text("Pairing link received. Check the address, then tap Save.", fontSize = 14.sp, color = c.text)
@@ -237,6 +247,8 @@ fun SettingsScreen(route: Route.Settings) {
                 }
             }
 
+            if (!updateFirst) AppSection()
+
             Text(
                 "Away from home: install Tailscale on this phone and on the laptop, sign in to the same account, and use the laptop's Tailscale name as the address.",
                 fontSize = 13.sp, lineHeight = 18.sp, color = c.faint, modifier = Modifier.padding(horizontal = 4.dp),
@@ -254,6 +266,58 @@ private fun Section(title: String, content: @Composable () -> Unit) {
         Surface(shape = RoundedCornerShape(16.dp), color = c.surface, border = BorderStroke(1.dp, c.border)) {
             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
         }
+    }
+}
+
+/** Version, and "Update to x.y" when the laptop has a newer build. */
+@Composable
+private fun AppSection() {
+    val ctx = LocalContext.current
+    val app = App.instance
+    val c = Claude.colors
+    val build by app.bridge.appBuild.collectAsState()
+    val state by Updater.state.collectAsState()
+    val host by app.bridge.host.collectAsState()
+    var canInstall by remember { mutableStateOf(Updater.canInstall(ctx)) }
+    LifecycleResumeEffect(Unit) {
+        canInstall = Updater.canInstall(ctx)
+        onPauseOrDispose { }
+    }
+    val installed = remember { Updater.installedCode(ctx) }
+    val name = remember { Updater.installedName(ctx) }
+    val b = build
+    Section("App") {
+        Text("Claude Mobile $name", fontSize = 15.sp, color = c.text)
+        when (val st = state) {
+            is UpdateState.Downloading -> {
+                LinearProgressIndicator(
+                    progress = { st.progress }, color = c.accentButton, trackColor = c.soft,
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                )
+                Text("Downloading ${b?.versionName.orEmpty()}… ${(st.progress * 100).toInt()}%", fontSize = 13.sp, color = c.muted)
+            }
+            UpdateState.Installing -> Text("Waiting for Android's installer…", fontSize = 13.sp, color = c.muted)
+            else -> when {
+                b == null -> Text("Connect to the laptop to check for updates.", fontSize = 13.sp, color = c.faint)
+                b.versionCode > installed -> {
+                    Text(
+                        "Version ${b.versionName} is ready on ${host.ifBlank { "the laptop" }} (${"%.1f".format(b.size / 1048576.0)} MB).",
+                        fontSize = 13.sp, lineHeight = 18.sp, color = c.muted,
+                    )
+                    if (!canInstall) {
+                        Text("Android needs your OK once before Claude Mobile can install its own updates.",
+                            fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                        SecondaryButton(onClick = {
+                            ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
+                        }) { Text("Allow installing updates") }
+                    } else {
+                        PrimaryButton(onClick = { Updater.start(ctx, app.bridge, b) }) { Text("Update to ${b.versionName}") }
+                    }
+                }
+                else -> Text("✓ Up to date", fontSize = 13.sp, color = c.success)
+            }
+        }
+        (state as? UpdateState.Failed)?.let { Text(it.message, fontSize = 13.sp, color = c.danger) }
     }
 }
 
