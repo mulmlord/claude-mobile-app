@@ -694,7 +694,14 @@ private fun MenuPanel(session: SessionInfo?, sc: ScreenState?, onSelect: (Int) -
                 Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = c.text)
             }
             val detail = session?.detail.orEmpty()
-            if (detail.isNotBlank() && detail != title) {
+            val prompt = sc?.prompt.orEmpty()
+            if (prompt.isNotBlank()) {
+                // What the laptop's screen says this prompt is about: the ground truth to approve.
+                Text(prompt, fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, lineHeight = 17.sp, color = c.text,
+                    maxLines = 14, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(c.soft).heightIn(max = 240.dp).verticalScroll(rememberScrollState()).padding(10.dp))
+            } else if (detail.isNotBlank() && detail != title) {
                 Text(detail, fontSize = 14.sp, lineHeight = 20.sp, color = c.muted, maxLines = 4, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 6.dp))
             }

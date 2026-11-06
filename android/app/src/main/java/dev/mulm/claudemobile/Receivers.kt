@@ -32,7 +32,7 @@ class ActionReceiver : BroadcastReceiver() {
                     }
                     ANSWER -> {
                         val choice = intent.getStringExtra("choice") ?: "yes"
-                        bridge.answer(sid, choice)
+                        bridge.answer(sid, choice, intent.getStringExtra(Notifier.EXTRA_DH))
                         Notifier.confirm(context, sid, if (choice == "no") "Denied" else "Allowed", error = false)
                     }
                     CHOOSE -> {

@@ -121,11 +121,27 @@ The laptop has to stay awake (not suspended) for any of this to work.
 
 Logs: `journalctl --user -u claude-mobile-bridge -f`
 
+### Security notes
+
+* The bridge token is the key to the laptop: anyone with it and network reach can type into
+  sessions. It's only accepted in the `Authorization` header (never in URLs).
+* The app refuses to talk to a tailnet address (`*.ts.net`, `100.64.0.0/10`) while the phone has
+  no VPN up, so a paused or killed Tailscale can't make it send the token to whatever the local
+  Wi-Fi's DNS answers. Turning on "Block connections without VPN" for Tailscale on the phone
+  adds the same protection system-wide.
+* Better still: enable HTTPS certificates for the tailnet (Tailscale admin console → DNS) and
+  serve the bridge over HTTPS (`tailscale serve --bg --https=8787 http://127.0.0.1:8787`, app
+  address `https://<laptop>.<tailnet>.ts.net:8787`); then the app can drop cleartext.
+* Allow/Deny from a notification is tied to the prompt it showed: the bridge reads the prompt's
+  text off the session's screen, the notification shows it (when more than one tool call is
+  waiting, instead of a guessed tool preview) and sends its fingerprint back; if a different
+  prompt is up by then, the answer is refused.
+
 ### API (token in `Authorization: Bearer …`)
 
 `GET /api/sessions`, `GET /api/sessions/{id}/items`, `GET /api/sessions/{id}/screen`,
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
-`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no"}`,
+`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?}`,
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
 `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
 or a dialog is open),

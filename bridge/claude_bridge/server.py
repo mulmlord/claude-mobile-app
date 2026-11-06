@@ -67,6 +67,12 @@ def load_config() -> dict:
     return cfg
 
 
+def dialog_hash(text: str) -> str:
+    """Fingerprint of a prompt's on-screen text; an approval carries it so it can only
+    answer the prompt the phone showed."""
+    return hashlib.sha256(text.encode()).hexdigest()[:16] if text else ""
+
+
 def save_config_key(key: str, value):
     """Persist one setting changed from the phone, keeping everything else in config.json."""
     path = os.path.join(CONFIG_DIR, "config.json")
@@ -516,11 +522,39 @@ class Bridge:
         await self.poll_transcript(s)
         if s.status != "permission":
             return
-        it = self.pending_tool(s)
-        detail = f"{it['name']}: {it.get('detail') or it.get('summary')}" if it else ""
+        running = self.pending_tools(s)
+        # A tool preview is only trustworthy when exactly one call is waiting; with parallel
+        # calls the dialog on screen may be about another one, so show the screen's text.
+        it = running[0] if len(running) == 1 else None
+        dialog = s.screen.dialog_text()
+        extra: dict = {}
+        if it:
+            extra["tool"] = tool_preview(it)
+        if dialog:
+            extra["dialog"] = dialog[:1500]
+            extra["dh"] = dialog_hash(dialog)
+        if len(running) > 1:
+            extra["waiting"] = len(running)
+        if dialog:
+            detail = dialog
+        elif it:
+            detail = f"{it['name']}: {it.get('detail') or it.get('summary')}"
+        elif len(running) > 1:
+            detail = f"{len(running)} tool calls are waiting. Open the chat to see which one this is."
+        else:
+            detail = ""
         body = msg + (f"\n{detail[:300]}" if detail else "")
-        self.notify(s, "permission", s.title, body, dedupe=f"perm:{detail or msg}",
-                    extra={"tool": tool_preview(it)} if it else None)
+        self.notify(s, "permission", s.title, body,
+                    dedupe=f"perm:{extra.get('dh') or (it['id'] if it else '') or detail or msg}", extra=extra or None)
+
+    def pending_tools(self, s: Session) -> list[dict]:
+        """Tool calls still without a result (newest first), other than a waiting AskUserQuestion."""
+        t = s.transcript
+        if not t:
+            return []
+        q = t.tool_items.get(t.pending_question) if t.pending_question else None
+        return [t.items[iid] for iid in reversed(t.order[-20:])
+                if t.items[iid]["kind"] == "tool" and t.items[iid].get("status") == "running" and iid != q]
 
     def pending_tool(self, s: Session) -> dict | None:
         """The newest tool call still without a result: what a permission prompt is about."""
@@ -637,11 +671,12 @@ class Bridge:
         x, y = s.screen.cursor()
         return {"t": "screen", "sid": s.id, "lines": s.screen.lines(), "cursor": [x, y],
                 "cols": s.screen.cols, "rows": s.screen.rows,
-                "options": s.screen.dialog_options()}
+                "options": s.screen.dialog_options(), "prompt": s.screen.dialog_text()}
 
     # ---- HTTP / WebSocket API ----------------------------------------------
     def check_auth(self, request: web.Request):
-        tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or request.query.get("token", "")
+        # Header only: a token in the URL would end up in logs and proxies.
+        tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         if not hmac.compare_digest(tok.encode(), self.cfg["token"].encode()):
             raise web.HTTPUnauthorized(text="bad token")
 
@@ -732,10 +767,18 @@ class Bridge:
     async def api_answer(self, request):
         """Answer a permission dialog by meaning: choice = yes | always | no."""
         s = self.get_session(request)
-        choice = (await request.json()).get("choice", "yes")
+        body = await request.json()
+        choice = body.get("choice", "yes")
         opts = s.screen.dialog_options()
         if not opts:
             raise web.HTTPConflict(text="no dialog visible in this session")
+        # Only answer the prompt the phone actually showed.
+        dh = str(body.get("dh") or "")
+        if dh:
+            if dialog_hash(s.screen.dialog_text()) != dh:
+                raise web.HTTPConflict(text="The prompt on the laptop changed. Open the chat to see what's waiting.")
+        elif len(self.pending_tools(s)) > 1:
+            raise web.HTTPConflict(text="Several tool calls are waiting. Open the chat to see which one you'd approve.")
 
         def kind(label):
             low = label.lower()

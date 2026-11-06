@@ -28,6 +28,7 @@ object Notifier {
     const val SERVICE_ID = 1
     const val EXTRA_SID = "sid"
     const val EXTRA_QID = "qid"
+    const val EXTRA_DH = "dh"
     const val KEY_REPLY = "reply"
 
     fun createChannels(ctx: Context) {
@@ -54,15 +55,19 @@ object Notifier {
         return PendingIntent.getActivity(ctx, sid?.hashCode() ?: 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun action(ctx: Context, action: String, sid: String, extra: String = "", mutable: Boolean = false, qid: String = ""): PendingIntent {
+    private fun action(
+        ctx: Context, action: String, sid: String, extra: String = "", mutable: Boolean = false, qid: String = "", dh: String = "",
+    ): PendingIntent {
         val i = Intent(ctx, ActionReceiver::class.java).apply {
             this.action = action
             putExtra(EXTRA_SID, sid)
             putExtra("choice", extra)
             if (qid.isNotEmpty()) putExtra(EXTRA_QID, qid)
+            // The prompt this button answers; the bridge refuses if a different one is up by then.
+            if (dh.isNotEmpty()) putExtra(EXTRA_DH, dh)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
-        return PendingIntent.getBroadcast(ctx, (action + sid + extra).hashCode(), i, flags)
+        return PendingIntent.getBroadcast(ctx, (action + sid + extra + dh).hashCode(), i, flags)
     }
 
     fun serviceNotification(ctx: Context, text: String): Notification =
@@ -92,15 +97,19 @@ object Notifier {
             .setColor(0xFFD97757.toInt())
             .setContentTitle("${ev.title} · $headline")
             .setContentText(tool?.let { toolLine(it) } ?: ev.body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(tool?.let { toolPreview(ctx, it) } ?: ev.body))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                tool?.takeIf { ev.waiting <= 1 }?.let { toolPreview(ctx, it) }
+                    ?: ev.dialog.takeIf { it.isNotBlank() }?.let { dialogPreview(it) }
+                    ?: ev.body
+            ))
             .setContentIntent(openIntent(ctx, ev.sid))
             .setAutoCancel(true)
             .setCategory(if (attention) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setGroup("sessions")
         if (ev.kind == "permission") {
-            b.addAction(0, "Allow", action(ctx, ActionReceiver.ANSWER, ev.sid, "yes"))
-            b.addAction(0, "Deny", action(ctx, ActionReceiver.ANSWER, ev.sid, "no"))
+            b.addAction(0, "Allow", action(ctx, ActionReceiver.ANSWER, ev.sid, "yes", dh = ev.dh))
+            b.addAction(0, "Deny", action(ctx, ActionReceiver.ANSWER, ev.sid, "no", dh = ev.dh))
         }
         if (ev.kind == "question") {
             // Android shows at most three action buttons; the rest stay in the chat.
@@ -135,6 +144,13 @@ object Notifier {
      * monospace. The "+"/"−" marks stay in the text because some systems drop colour spans
      * (and the shade only fits so many lines, which is why the diff is compacted).
      */
+    /** The prompt exactly as the laptop shows it, monospace. */
+    private fun dialogPreview(text: String): CharSequence {
+        val sb = SpannableStringBuilder(text.lines().take(14).joinToString("\n"))
+        sb.setSpan(TypefaceSpan("monospace"), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return sb
+    }
+
     private fun toolPreview(ctx: Context, t: ToolPreview): CharSequence {
         val sb = SpannableStringBuilder()
         sb.append(toolLine(t), StyleSpan(Typeface.BOLD), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

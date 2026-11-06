@@ -137,7 +137,29 @@ class Screen:
             nm = self._NUM_RE.match(label)
             opts.append({"index": n, "key": nm.group(1) if nm else None,
                          "label": nm.group(2) if nm else label, "selected": j == i})
-        return opts if len(opts) >= 2 else []
+        if len(opts) < 2:
+            return []
+        self._menu_top = (lines, min(rows))
+        return opts
+
+    def dialog_text(self, max_lines: int = 14) -> str:
+        """The menu's prompt as shown above its options (for a permission prompt: the tool
+        and the command or file it's about). This is what the user would read at the laptop,
+        so approvals from the phone are tied to exactly this text, not to a guess from the
+        transcript (with parallel tool calls the newest pending one isn't always the one asked)."""
+        if not self.dialog_options():
+            return ""
+        lines, top = self._menu_top
+        out: list[str] = []
+        for j in range(top - 1, max(-1, top - 41), -1):
+            st = lines[j].strip()
+            if st.startswith(("╭", "┌", "─", "━", "╌")):  # box top or rule: the dialog starts below it
+                break
+            out.append(st.strip("│|").strip())
+            if sum(1 for x in out if x) >= max_lines:
+                break
+        text = "\n".join(reversed(out)).strip("\n")
+        return re.sub(r"\n{3,}", "\n\n", text)
 
 
 def match_option(opts: list[dict], label: str) -> dict | None:

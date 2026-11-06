@@ -86,7 +86,11 @@ data class Item(
 
 data class MenuOption(val index: Int, val key: String?, val label: String, val selected: Boolean)
 
-data class ScreenState(val sid: String, val lines: List<String>, val cols: Int, val options: List<MenuOption>) {
+data class ScreenState(
+    val sid: String, val lines: List<String>, val cols: Int, val options: List<MenuOption>,
+    /** The open menu's prompt text as shown on screen. */
+    val prompt: String = "",
+) {
     companion object {
         fun from(o: JSONObject): ScreenState {
             val lines = o.optJSONArray("lines")
@@ -97,6 +101,7 @@ data class ScreenState(val sid: String, val lines: List<String>, val cols: Int, 
                 options = o.optJSONArray("options").mapObjects {
                     MenuOption(it.optInt("index"), if (it.isNull("key")) null else it.s("key"), it.s("label"), it.optBoolean("selected"))
                 },
+                prompt = o.s("prompt"),
             )
         }
     }
@@ -135,6 +140,11 @@ data class NotifyEvent(
     /** question: option labels that one tap can answer, and the question they belong to. */
     val options: List<String> = emptyList(),
     val qid: String = "",
+    /** permission: the prompt as shown on the laptop's screen, and its fingerprint (sent back with Allow/Deny). */
+    val dialog: String = "",
+    val dh: String = "",
+    /** permission: more than one tool call is waiting, so a single tool preview would be a guess. */
+    val waiting: Int = 0,
 ) {
     companion object {
         fun from(o: JSONObject) = NotifyEvent(
@@ -143,6 +153,7 @@ data class NotifyEvent(
             options = o.optJSONArray("options")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }
                 ?: emptyList(),
             qid = o.s("qid"),
+            dialog = o.s("dialog"), dh = o.s("dh"), waiting = o.optInt("waiting"),
         )
     }
 }

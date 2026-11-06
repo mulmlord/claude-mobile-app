@@ -35,6 +35,11 @@ class BridgeClient(private val prefs: Prefs) {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
+        // Never send the token to a tailnet name while Tailscale is down (see TailnetGuard).
+        .addInterceptor { chain ->
+            if (TailnetGuard.blocked(chain.request().url.host)) throw java.io.IOException(TailnetGuard.MESSAGE)
+            chain.proceed(chain.request())
+        }
         .build()
 
     private val _conn = MutableStateFlow(if (prefs.configured) Conn.Offline else Conn.NotConfigured)
@@ -247,7 +252,9 @@ class BridgeClient(private val prefs: Prefs) {
 
     suspend fun select(sid: String, index: Int) = call("/api/sessions/$sid/select", JSONObject().put("index", index))
 
-    suspend fun answer(sid: String, choice: String) = call("/api/sessions/$sid/answer", JSONObject().put("choice", choice))
+    /** [dh] ties the answer to the prompt the notification showed; the bridge refuses if another is up. */
+    suspend fun answer(sid: String, choice: String, dh: String? = null) =
+        call("/api/sessions/$sid/answer", JSONObject().put("choice", choice).apply { if (!dh.isNullOrBlank()) put("dh", dh) })
 
     /** Picks a question's option by label; with [qid] the bridge refuses once that question is no longer waiting. */
     suspend fun choose(sid: String, label: String, qid: String?) =
