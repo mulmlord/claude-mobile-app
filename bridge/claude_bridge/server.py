@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import socket
 import struct
 import time
@@ -47,6 +48,8 @@ KEYS = {
     "ctrl-u": b"\x15", "ctrl-l": b"\x0c",
 }
 ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
+RENAME_MAX = 80
+FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
 
 
 def load_config() -> dict:
@@ -90,6 +93,34 @@ def pid_alive(pid: int | None) -> bool:
         return False
     except PermissionError:
         return True
+
+
+def parent_pid(pid: int | None) -> int | None:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+    except (OSError, TypeError):
+        return None
+    # "pid (comm) state ppid ...": comm may itself contain spaces and parentheses
+    try:
+        return int(stat.rsplit(")", 1)[1].split()[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def clean_name(raw) -> str:
+    """A session name as one printable line: it gets typed into the terminal, where a
+    newline would submit early and control characters would act as keys."""
+    s = " ".join(str(raw or "").split())
+    return "".join(ch for ch in s if ch.isprintable()).strip()
+
+
+async def read_json(request: web.Request) -> dict:
+    try:
+        d = await request.json()
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
 def plain(md: str, n: int = 280) -> str:
@@ -467,7 +498,10 @@ class Bridge:
         t = s.transcript
         if not t:
             return
+        title = t.title
         items, reset = t.poll()
+        if t.title != title:
+            self.dirty = True  # e.g. /rename: a custom-title entry changes the title but no chat items
         if not items and not reset:
             return
         s.updated = time.time()
@@ -644,6 +678,72 @@ class Bridge:
 
     async def api_screen(self, request):
         return web.json_response(self.screen_msg(self.get_session(request)))
+
+    # ---- ending and renaming -------------------------------------------------
+    def waiting_for_answer(self, s: Session) -> bool:
+        """A permission prompt or question is open: typed text would land in it, and Enter
+        would pick whatever option is highlighted."""
+        return s.status in ("permission", "question") or bool(s.screen.dialog_options())
+
+    async def api_end(self, request):
+        """End a session as you would at the laptop: interrupt, then /exit. The transcript
+        stays, so it can be resumed. force=true SIGTERMs its claude process instead."""
+        s = self.get_session(request)
+        if (await read_json(request)).get("force") is True:
+            self.terminate(s)
+            return web.json_response({"ok": True})
+        if not s.writer:
+            raise web.HTTPConflict(text="This session isn't connected to the bridge, so it can't be asked to exit. Force quit stops it anyway.")
+        if s.status == "working" or self.waiting_for_answer(s):
+            # /exit would run mid-turn too, but Esc first stops the turn cleanly and
+            # dismisses an open dialog, which would otherwise swallow the typing.
+            await self.inject(s, KEYS["esc"])
+            await asyncio.sleep(1.0)
+            if s.screen.dialog_options():
+                raise web.HTTPConflict(text="A menu is still open in this session. Answer it, or use Force quit.")
+        # Clear a line half-typed at the laptop, so it can't turn into the message "…/exit".
+        await self.inject(s, KEYS["ctrl-u"])
+        await asyncio.sleep(0.06)
+        await self.send_text(s, "/exit")
+        log.info("session %s: asked to exit", s.id)
+        return web.json_response({"ok": True})
+
+    def terminate(self, s: Session):
+        # Only signal the pid while it is still the wrapper's child, i.e. still this
+        # session's claude and not some process that reused the number.
+        if not s.pid or not s.wrapper_pid or parent_pid(s.pid) != s.wrapper_pid:
+            raise web.HTTPConflict(text="The session's claude process isn't running any more.")
+        os.kill(s.pid, signal.SIGTERM)
+        log.info("session %s: SIGTERM to claude (pid %s)", s.id, s.pid)
+        asyncio.get_running_loop().create_task(self.kill_later(s.pid, s.wrapper_pid))
+
+    async def kill_later(self, pid: int, wrapper_pid: int):
+        """Force quit has to work on a wedged claude too, which may ignore SIGTERM."""
+        await asyncio.sleep(FORCE_KILL_AFTER)
+        if parent_pid(pid) == wrapper_pid:
+            log.info("claude pid %s ignored SIGTERM, sending SIGKILL", pid)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    async def api_rename(self, request):
+        """Types /rename <name>. Claude Code appends a custom-title entry to the transcript,
+        which becomes the title here (Transcript reads it) and in its own resume list."""
+        s = self.get_session(request)
+        name = clean_name((await read_json(request)).get("name"))
+        if not name:
+            raise web.HTTPBadRequest(text="Give the session a name.")
+        if len(name) > RENAME_MAX:
+            raise web.HTTPBadRequest(text=f"Keep the name to {RENAME_MAX} characters or fewer.")
+        if not s.writer:
+            raise web.HTTPConflict(text="This session isn't connected to the bridge right now.")
+        if self.waiting_for_answer(s):
+            raise web.HTTPConflict(text="Claude is waiting for an answer in this session. Answer it first, then rename.")
+        # While Claude is working this still applies at once: /rename is an "immediate"
+        # command in Claude Code, so it runs mid-turn instead of queueing behind it.
+        await self.send_text(s, f"/rename {name}")
+        return web.json_response({"ok": True, "name": name})
 
     # ---- app updates -----------------------------------------------------------
     def app_build(self) -> tuple[dict, str] | None:
@@ -845,6 +945,8 @@ async def main():
     app.router.add_post("/api/sessions/{sid}/answer", bridge.api_answer)
     app.router.add_post("/api/sessions/{sid}/select", bridge.api_select)
     app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
+    app.router.add_post("/api/sessions/{sid}/end", bridge.api_end)
+    app.router.add_post("/api/sessions/{sid}/rename", bridge.api_rename)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
     bridge.github.routes(app)

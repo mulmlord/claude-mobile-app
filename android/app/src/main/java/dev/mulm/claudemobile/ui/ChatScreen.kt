@@ -1,11 +1,13 @@
 package dev.mulm.claudemobile.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,17 +28,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -53,6 +61,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,16 +70,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -113,9 +131,32 @@ fun ChatScreen(sid: String) {
     val conn by bridge.conn.collectAsState()
     var showTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var ending by remember { mutableStateOf(false) }
     val needsYou = session?.needsYou == true
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+
+    // Search: matches are item ids, oldest first; the current one is pinned by id so
+    // messages arriving meanwhile don't move it. Starts at the newest match.
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var currentMatch by rememberSaveable { mutableStateOf<String?>(null) }
+    var jump by remember { mutableIntStateOf(0) }  // bumped to scroll even when the match didn't change
+    val matches = remember(items, query) { searchMatches(items, query) }
+    val cur = matches.indexOf(currentMatch).let { if (it >= 0) it else matches.lastIndex }
+    fun step(by: Int) {
+        if (matches.isEmpty()) return
+        currentMatch = matches[(cur + by).mod(matches.size)]
+        jump++
+    }
+    fun closeSearch() {
+        searching = false
+        query = ""
+        currentMatch = null
+    }
+    BackHandler(enabled = searching) { closeSearch() }
 
     fun act(block: suspend () -> Unit) {
         scope.launch {
@@ -148,7 +189,17 @@ fun ChatScreen(sid: String) {
         containerColor = c.bg,
         topBar = {
             Column {
-                TopAppBar(
+                if (searching) SearchBar(
+                    query = query,
+                    onQuery = { q ->
+                        query = q
+                        currentMatch = searchMatches(items, q).lastOrNull()
+                        jump++
+                    },
+                    position = if (query.isBlank()) null else "${cur + 1} / ${matches.size}",
+                    hasMatches = matches.isNotEmpty(),
+                    onPrev = { step(-1) }, onNext = { step(1) }, onClose = { closeSearch() },
+                ) else TopAppBar(
                     colors = claudeTopBarColors(),
                     navigationIcon = {
                         IconButton(onClick = { Nav.go(Route.Sessions) }) {
@@ -204,6 +255,14 @@ fun ChatScreen(sid: String) {
                                 Icon(TerminalIcon, "Terminal", Modifier.size(20.dp), tint = if (showTerminal) c.text else c.muted)
                             }
                         }
+                        Box {
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
+                                MenuEntry("Search") { menu = false; searching = true }
+                                MenuEntry("Rename…", enabled = session?.connected == true) { menu = false; renaming = true }
+                                MenuEntry("End session…", enabled = session != null) { menu = false; ending = true }
+                            }
+                        }
                     },
                 )
                 HorizontalDivider(thickness = 1.dp, color = c.border)
@@ -250,8 +309,14 @@ fun ChatScreen(sid: String) {
             }
         },
     ) { pad ->
-        MessageList(items, pad, working = session?.status == "working" && session.connected)
+        MessageList(
+            items, pad, working = session?.status == "working" && session.connected,
+            query = query, matches = remember(matches) { matches.toSet() },
+            current = if (searching) matches.getOrNull(cur) else null, jump = jump,
+        )
     }
+    if (renaming && session != null) RenameSessionDialog(session) { renaming = false }
+    if (ending && session != null) EndSessionDialog(session) { ending = false }
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
@@ -294,6 +359,85 @@ private fun QuickActions(onText: (String) -> Unit, onMode: () -> Unit, onClear: 
     }
 }
 
+/** The chat's top bar while searching: query field, "3 / 12", older ↑ / newer ↓. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchBar(
+    query: String, onQuery: (String) -> Unit, position: String?, hasMatches: Boolean,
+    onPrev: () -> Unit, onNext: () -> Unit, onClose: () -> Unit,
+) {
+    val c = Claude.colors
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    TopAppBar(
+        colors = claudeTopBarColors(),
+        navigationIcon = {
+            IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close search") }
+        },
+        title = {
+            BasicTextField(
+                value = query, onValueChange = onQuery, singleLine = true,
+                textStyle = TextStyle(fontSize = 16.sp, color = c.text),
+                cursorBrush = SolidColor(c.accentButton),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                // Results are already shown while typing; Search just gets the keyboard out of the way.
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) Text("Search this chat", fontSize = 16.sp, color = c.faint, maxLines = 1)
+                        inner()
+                    }
+                },
+            )
+        },
+        actions = {
+            if (position != null) {
+                Text(position, fontSize = 13.sp, color = if (hasMatches) c.muted else c.faint, maxLines = 1,
+                    modifier = Modifier.padding(start = 8.dp, end = 2.dp))
+            }
+            IconButton(onClick = onPrev, enabled = hasMatches) { Icon(Icons.Filled.KeyboardArrowUp, "Previous match") }
+            IconButton(onClick = onNext, enabled = hasMatches) { Icon(Icons.Filled.KeyboardArrowDown, "Next match") }
+        },
+    )
+}
+
+/** Ids of the items containing [query] (case-insensitive), oldest first. */
+private fun searchMatches(items: List<Item>, query: String): List<String> {
+    val q = query.trim()
+    if (q.isEmpty()) return emptyList()
+    return items.filter { it.matchesQuery(q) }.map { it.id }
+}
+
+private fun Item.matchesQuery(q: String) =
+    listOf(text, name, summary, detail, result).any { it.contains(q, ignoreCase = true) }
+
+/** Tint behind a search hit, drawn past the item's edges so the layout doesn't shift. */
+private fun Modifier.searchMark(fill: Color?, stroke: Color?): Modifier =
+    if (fill == null) this else drawBehind {
+        val dx = 8.dp.toPx()
+        val dy = 4.dp.toPx()  // half the list's item spacing
+        val topLeft = Offset(-dx, -dy)
+        val area = Size(size.width + 2 * dx, size.height + 2 * dy)
+        val r = CornerRadius(14.dp.toPx())
+        drawRoundRect(fill, topLeft, area, r)
+        if (stroke != null) drawRoundRect(stroke, topLeft, area, r, style = Stroke(1.5.dp.toPx()))
+    }
+
+/** Brings item [index] into view: centred when it fits, otherwise with its top at the top. */
+private suspend fun LazyListState.reveal(index: Int) {
+    // Jump first if it's far away: animating there would compose every item in between.
+    if (layoutInfo.visibleItemsInfo.none { it.index == index }) scrollToItem(index)
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    // Offsets run from the list's start edge, which reverseLayout puts at the bottom; the
+    // arithmetic is the same either way.
+    val room = info.viewportSize.height - info.beforeContentPadding - info.afterContentPadding
+    val target = if (item.size <= room) (room - item.size) / 2 else room - item.size
+    animateScrollBy((item.offset - target).toFloat())
+}
+
 private fun statusText(s: SessionInfo) = when {
     !s.connected -> "offline"
     s.status == "working" -> "working…"
@@ -304,14 +448,27 @@ private fun statusText(s: SessionInfo) = when {
 }
 
 @Composable
-private fun MessageList(items: List<Item>, pad: PaddingValues, working: Boolean) {
+private fun MessageList(
+    items: List<Item>, pad: PaddingValues, working: Boolean,
+    query: String = "", matches: Set<String> = emptySet(), current: String? = null, jump: Int = 0,
+) {
     val c = Claude.colors
     val state = rememberLazyListState()
     val reversed = remember(items) { items.asReversed() }
     // The working spark is the bottom row too, so its appearing must scroll down as well.
+    // Not while a search hit is shown, though: new messages mustn't pull the list away from it.
     LaunchedEffect(items.lastOrNull()?.id, items.lastOrNull()?.seq, working) {
-        if (state.firstVisibleItemIndex <= 2) state.animateScrollToItem(0)
+        if (current == null && state.firstVisibleItemIndex <= 2) state.animateScrollToItem(0)
     }
+    LaunchedEffect(current, jump) {
+        val pos = items.indexOfFirst { it.id == current }
+        // The list shows items newest first, below the optional working row.
+        if (pos >= 0) state.reveal(items.size - 1 - pos + if (working) 1 else 0)
+    }
+    val hitFill = c.accent.copy(alpha = if (c.dark) 0.16f else 0.10f)
+    val hitStroke = c.accent.copy(alpha = 0.75f)
+    val otherFill = c.accent.copy(alpha = if (c.dark) 0.07f else 0.045f)
+    val q = query.trim()
     if (items.isEmpty()) {
         Column(
             Modifier.padding(pad).fillMaxWidth().padding(40.dp),
@@ -341,11 +498,16 @@ private fun MessageList(items: List<Item>, pad: PaddingValues, working: Boolean)
             }
         }
         items(reversed, key = { it.id }) { item ->
-            when (item.kind) {
-                "user" -> UserBubble(item.text)
-                "assistant" -> AssistantText(item.text)
-                "tool" -> ToolRow(item)
-                else -> SystemNote(item.text)
+            val isCurrent = item.id == current
+            val hit = isCurrent || item.id in matches
+            Box(Modifier.searchMark(if (isCurrent) hitFill else if (hit) otherFill else null, if (isCurrent) hitStroke else null)) {
+                when (item.kind) {
+                    "user" -> UserBubble(item.text)
+                    "assistant" -> AssistantText(item.text)
+                    // A hit only in the command or output: open the row so the match can be seen.
+                    "tool" -> ToolRow(item, reveal = isCurrent && !item.name.contains(q, true) && !item.summary.contains(q, true))
+                    else -> SystemNote(item.text)
+                }
             }
         }
     }
@@ -400,11 +562,11 @@ private fun SystemNote(text: String) {
 }
 
 @Composable
-private fun ToolRow(item: Item) {
+private fun ToolRow(item: Item, reveal: Boolean = false) {
     // An edit waiting for your permission opens by itself, so you read the change before allowing it.
     var manual by rememberSaveable(item.id) { mutableStateOf<Boolean?>(null) }
     val hasDiff = item.diff.isNotEmpty()
-    val expanded = manual ?: (item.status == "running" && hasDiff)
+    val expanded = manual ?: (reveal || (item.status == "running" && hasDiff))
     val c = Claude.colors
     val shape = RoundedCornerShape(12.dp)
     Column(Modifier.fillMaxWidth().clip(shape).border(1.dp, c.border, shape)) {
