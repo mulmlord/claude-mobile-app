@@ -9,6 +9,7 @@ import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
+import dev.mulm.claudemobile.widget.WidgetSync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,6 +89,8 @@ class BridgeService : Service() {
                     .notify(Notifier.SERVICE_ID, Notifier.serviceNotification(this@BridgeService, text))
             }
         }
+        // Home-screen widget: redrawn from here, as the bridge's state changes.
+        scope.launch { WidgetSync.run(this@BridgeService, bridge) }
 
         val cm = getSystemService(ConnectivityManager::class.java)
         netCallback = object : ConnectivityManager.NetworkCallback() {

@@ -13,8 +13,8 @@ android {
         applicationId = "dev.mulm.claudemobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.8.0"
+        versionCode = 10
+        versionName = "0.9.0"
     }
 
     buildTypes {
@@ -26,6 +26,11 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    testOptions {
+        // Robolectric widget tests: real resources, and PNG renders to look at.
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.systemProperty("widgetRenders", project.layout.buildDirectory.dir("widget-renders").get().asFile.path) }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -44,5 +49,13 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.46.0")
+    // Home-screen widget. Glance only asks for WorkManager 2.7 (2021, before Android 13 and 14);
+    // naming a current release makes it win resolution.
+    implementation("androidx.glance:glance-appwidget:1.2.0")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("androidx.work:work-testing:2.12.0")
 }
