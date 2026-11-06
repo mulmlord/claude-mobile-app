@@ -8,7 +8,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Typeface
 import android.os.Build
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.text.style.TypefaceSpan
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -20,6 +27,7 @@ object Notifier {
     const val CH_SERVICE = "service"
     const val SERVICE_ID = 1
     const val EXTRA_SID = "sid"
+    const val EXTRA_QID = "qid"
     const val KEY_REPLY = "reply"
 
     fun createChannels(ctx: Context) {
@@ -46,11 +54,12 @@ object Notifier {
         return PendingIntent.getActivity(ctx, sid?.hashCode() ?: 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun action(ctx: Context, action: String, sid: String, extra: String = "", mutable: Boolean = false): PendingIntent {
+    private fun action(ctx: Context, action: String, sid: String, extra: String = "", mutable: Boolean = false, qid: String = ""): PendingIntent {
         val i = Intent(ctx, ActionReceiver::class.java).apply {
             this.action = action
             putExtra(EXTRA_SID, sid)
             putExtra("choice", extra)
+            if (qid.isNotEmpty()) putExtra(EXTRA_QID, qid)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
         return PendingIntent.getBroadcast(ctx, (action + sid + extra).hashCode(), i, flags)
@@ -76,12 +85,14 @@ object Notifier {
             "question" -> "Has a question"
             else -> "Finished"
         }
+        // Newer bridges say which tool is waiting: one line collapsed, the diff or command expanded.
+        val tool = ev.tool.takeIf { ev.kind == "permission" }
         val b = NotificationCompat.Builder(ctx, if (attention) CH_ATTENTION else CH_DONE)
             .setSmallIcon(R.drawable.ic_stat)
             .setColor(0xFFD97757.toInt())
             .setContentTitle("${ev.title} · $headline")
-            .setContentText(ev.body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(ev.body))
+            .setContentText(tool?.let { toolLine(it) } ?: ev.body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(tool?.let { toolPreview(ctx, it) } ?: ev.body))
             .setContentIntent(openIntent(ctx, ev.sid))
             .setAutoCancel(true)
             .setCategory(if (attention) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_MESSAGE)
@@ -90,6 +101,12 @@ object Notifier {
         if (ev.kind == "permission") {
             b.addAction(0, "Allow", action(ctx, ActionReceiver.ANSWER, ev.sid, "yes"))
             b.addAction(0, "Deny", action(ctx, ActionReceiver.ANSWER, ev.sid, "no"))
+        }
+        if (ev.kind == "question") {
+            // Android shows at most three action buttons; the rest stay in the chat.
+            for (label in ev.options.take(3)) {
+                b.addAction(0, label, action(ctx, ActionReceiver.CHOOSE, ev.sid, label, qid = ev.qid))
+            }
         }
         if (ev.kind == "done") {
             val input = RemoteInput.Builder(KEY_REPLY).setLabel("Message Claude").build()
@@ -101,6 +118,69 @@ object Notifier {
             )
         }
         NotificationManagerCompat.from(ctx).notify(idFor(ev.sid), b.build())
+    }
+
+    /** "Edit · app/src/x.kt (+3 −1)", "Bash · Build the app". */
+    private fun toolLine(t: ToolPreview): String = buildString {
+        append(t.name.ifBlank { "Tool" })
+        if (t.summary.isNotBlank()) append(" · ").append(t.summary)
+        if (t.diff != null) {
+            val counts = listOfNotNull("+${t.added}".takeIf { t.added > 0 }, "−${t.removed}".takeIf { t.removed > 0 })
+            if (counts.isNotEmpty()) append(" (").append(counts.joinToString(" ")).append(")")
+        }
+    }
+
+    /**
+     * Expanded permission notification: the tool line, then the diff or the command in
+     * monospace. The "+"/"−" marks stay in the text because some systems drop colour spans
+     * (and the shade only fits so many lines, which is why the diff is compacted).
+     */
+    private fun toolPreview(ctx: Context, t: ToolPreview): CharSequence {
+        val sb = SpannableStringBuilder()
+        sb.append(toolLine(t), StyleSpan(Typeface.BOLD), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val body = sb.length
+        if (t.diff != null) {
+            // The shade follows the system's dark mode, not the app's theme setting.
+            val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+            val (add, del, faint) = if (night) Triple(0xFF7DB38A, 0xFFE5735F, 0xFF9C9A92) else Triple(0xFF3F7D4E, 0xFFB53333, 0xFF8E8C85)
+            for ((kind, text) in compactDiff(t.diff)) {
+                sb.append('\n')
+                val start = sb.length
+                sb.append(when (kind) { '+' -> "+ "; '-' -> "− "; '@' -> ""; else -> "  " }).append(text)
+                val color = when (kind) { '+' -> add; '-' -> del; '@' -> faint; else -> null }
+                if (color != null) sb.setSpan(ForegroundColorSpan(color.toInt()), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        } else if (t.detail.isNotBlank()) {
+            sb.append('\n').append(if (t.name == "Bash") "$ " else "").append(t.detail.trim())
+        }
+        if (sb.length > body) sb.setSpan(TypefaceSpan("monospace"), body, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return sb
+    }
+
+    /**
+     * Diff lines ([Item.diff] format) as (kind, text) with kind '+', '-', ' ' or '@' (a gap or
+     * "… N more lines"): changed lines plus one line of context, and the indentation they share
+     * removed, so the change itself fits the few narrow lines a notification shows.
+     */
+    private fun compactDiff(lines: List<String>): List<Pair<Char, String>> {
+        fun changed(i: Int) = lines.getOrNull(i)?.let { it.startsWith("+") || it.startsWith("-") } == true
+        val rows = ArrayList<Pair<Char, String>>()
+        var gap = false
+        for ((i, ln) in lines.withIndex()) {
+            when {
+                ln.startsWith("@") && ln.length > 1 -> rows += '@' to "… ${ln.drop(1)}"
+                ln.isEmpty() || ln.startsWith("@") -> gap = true
+                changed(i) || changed(i - 1) || changed(i + 1) -> {
+                    if (gap && rows.isNotEmpty()) rows += '@' to "⋯"
+                    gap = false
+                    rows += ln[0] to ln.drop(1).replace("\t", "    ")
+                }
+                else -> gap = true
+            }
+        }
+        val indent = rows.filter { it.first != '@' && it.second.isNotBlank() }
+            .minOfOrNull { (_, s) -> s.length - s.trimStart(' ').length } ?: 0
+        return rows.map { (k, s) -> if (k == '@') k to s else k to s.drop(indent).take(120) }
     }
 
     /** Replace a session notification with a short confirmation (needed after RemoteInput). */

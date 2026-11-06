@@ -249,6 +249,10 @@ class BridgeClient(private val prefs: Prefs) {
 
     suspend fun answer(sid: String, choice: String) = call("/api/sessions/$sid/answer", JSONObject().put("choice", choice))
 
+    /** Picks a question's option by label; with [qid] the bridge refuses once that question is no longer waiting. */
+    suspend fun choose(sid: String, label: String, qid: String?) =
+        call("/api/sessions/$sid/choose", JSONObject().put("label", label).apply { if (!qid.isNullOrBlank()) put("qid", qid) })
+
     /** Sends a photo to the laptop; returns where the bridge saved it. */
     suspend fun upload(sid: String, bytes: ByteArray, type: String): String = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(prefs.url + "/api/sessions/$sid/upload")
