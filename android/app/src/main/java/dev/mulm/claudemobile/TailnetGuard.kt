@@ -21,10 +21,29 @@ object TailnetGuard {
 
     fun blocked(host: String): Boolean {
         if (!isTailnet(host)) return false
+        if (tunnelUp() || vpnNetworkSeen()) return false
+        android.util.Log.w("TailnetGuard", "refusing $host: no VPN network and no Tailscale tunnel interface")
+        return true
+    }
+
+    /** Tailscale's tun interface holds the phone's tailnet address. Checked directly because
+     *  what ConnectivityManager reports to an app in the background can lag or be filtered. */
+    private fun tunnelUp(): Boolean = try {
+        java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().any { ni ->
+            ni.isUp && ni.name.startsWith("tun") && ni.inetAddresses.toList().any { a ->
+                val b = a.address
+                b.size == 4 && (b[0].toInt() and 0xff) == 100 && (b[1].toInt() and 0xc0) == 64
+            }
+        }
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun vpnNetworkSeen(): Boolean {
         val cm = App.instance.getSystemService(ConnectivityManager::class.java) ?: return false
         @Suppress("DEPRECATION")
         val nets = listOfNotNull(cm.activeNetwork) + cm.allNetworks
-        return nets.none { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true }
+        return nets.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true }
     }
 
     const val MESSAGE = "Tailscale is off on this phone"
