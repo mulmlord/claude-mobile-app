@@ -1,5 +1,7 @@
 package dev.mulm.claudemobile
 
+import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,7 +74,17 @@ class BridgeClient(private val prefs: Prefs) {
     @Volatile private var screenSub: String? = null
     private var attempt = 0
     private var retryJob: Job? = null
+    private var deadlineJob: Job? = null
+    /** elapsedRealtime when the pending handshake started; 0 while none is pending. */
+    private var connectingSince = 0L
     private val lock = Any()
+    /**
+     * Guards [ws], the retry state and [conn]. Listener callbacks check under it that their socket
+     * is still the current one, and [connect] assigns [ws] while holding it. Without that, a failure
+     * OkHttp reports before newWebSocket() has returned (Tailscale down: the guard refuses at once)
+     * was dropped as stale, and the app sat on "Connecting…" with no socket at all.
+     */
+    private val connLock = Any()
 
     fun start() {
         wanted = true
@@ -80,34 +92,51 @@ class BridgeClient(private val prefs: Prefs) {
     }
 
     fun stop() {
-        wanted = false
-        retryJob?.cancel()
-        ws?.close(1000, null)
-        ws = null
-        _conn.value = if (prefs.configured) Conn.Offline else Conn.NotConfigured
+        val old: WebSocket?
+        synchronized(connLock) {
+            wanted = false
+            retryJob?.cancel()
+            deadlineJob?.cancel()
+            old = ws
+            ws = null
+            connectingSince = 0
+            _conn.value = if (prefs.configured) Conn.Offline else Conn.NotConfigured
+        }
+        old?.close(1000, null)
     }
 
     /** Settings changed or the network came back: drop backoff and reconnect now. */
     fun reconnectNow() {
-        retryJob?.cancel()
-        attempt = 0
-        ws?.cancel()
-        ws = null
+        val old: WebSocket?
+        synchronized(connLock) {
+            retryJob?.cancel()
+            deadlineJob?.cancel()
+            attempt = 0
+            old = ws
+            ws = null
+            connectingSince = 0
+        }
+        old?.cancel()
         if (wanted) connect()
     }
 
+    /** App brought to the front, or the watchdog fired: reconnect unless a socket is up or still handshaking. */
     fun ensureConnected() {
-        if (wanted && ws == null) reconnectNow()
+        if (!wanted) return
+        val stale = synchronized(connLock) {
+            ws == null || (connectingSince != 0L && SystemClock.elapsedRealtime() - connectingSince > HANDSHAKE_MS)
+        }
+        if (stale) reconnectNow()
     }
 
     private fun connect() {
-        synchronized(lock) {
+        synchronized(connLock) {
+            if (!wanted) return
             if (!prefs.configured) {
                 _conn.value = Conn.NotConfigured
                 return
             }
             if (ws != null) return
-            _conn.value = Conn.Connecting
             val req = try {
                 Request.Builder().url(prefs.url + "/api/ws")
                     .header("Authorization", "Bearer " + prefs.token).build()
@@ -116,27 +145,61 @@ class BridgeClient(private val prefs: Prefs) {
                 _error.value = "Invalid URL: ${prefs.url}"
                 return
             }
-            ws = http.newWebSocket(req, Listener())
+            _conn.value = Conn.Connecting
+            connectingSince = SystemClock.elapsedRealtime()
+            val socket = http.newWebSocket(req, Listener())
+            ws = socket
+            Log.i(TAG, "connecting to ${req.url.host} (attempt ${attempt + 1})")
+            // OkHttp's own timeouts don't cover every step (DNS, for one); never wait forever.
+            deadlineJob?.cancel()
+            deadlineJob = scope.launch {
+                delay(HANDSHAKE_MS)
+                if (lost(socket, Conn.Offline, "No answer from the laptop")) {
+                    Log.w(TAG, "handshake took over ${HANDSHAKE_MS / 1000}s, retrying")
+                    socket.cancel()
+                    scheduleRetry(false)
+                }
+            }
+        }
+    }
+
+    /** Forgets [socket] if it is still the current one; false for a stale socket's late callback. */
+    private fun lost(socket: WebSocket, state: Conn, error: String?): Boolean {
+        synchronized(connLock) {
+            if (socket !== ws) return false
+            ws = null
+            connectingSince = 0
+            deadlineJob?.cancel()
+            _conn.value = state
+            if (error != null) _error.value = error
+            return true
         }
     }
 
     private fun scheduleRetry(unauthorized: Boolean) {
-        if (!wanted) return
-        val secs = if (unauthorized) 60L else minOf(30L, 1L shl minOf(attempt, 5))
-        attempt++
-        retryJob?.cancel()
-        retryJob = scope.launch {
-            delay(secs * 1000)
-            connect()
+        synchronized(connLock) {
+            if (!wanted) return
+            val secs = if (unauthorized) 60L else minOf(30L, 1L shl minOf(attempt, 5))
+            attempt++
+            retryJob?.cancel()
+            retryJob = scope.launch {
+                delay(secs * 1000)
+                connect()
+            }
         }
     }
 
     private inner class Listener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (webSocket !== ws) return
-            attempt = 0
-            _conn.value = Conn.Connected
-            _error.value = null
+            synchronized(connLock) {
+                if (webSocket !== ws) return
+                attempt = 0
+                connectingSince = 0
+                deadlineJob?.cancel()
+                _conn.value = Conn.Connected
+                _error.value = null
+            }
+            Log.i(TAG, "connected")
             webSocket.send(JSONObject().put("t", "hello").put("last_notify", prefs.lastNotifyId).toString())
             sub?.let { webSocket.send(JSONObject().put("t", "sub").put("sid", it).toString()) }
             screenSub?.let { webSocket.send(JSONObject().put("t", "screen").put("sid", it).toString()) }
@@ -179,20 +242,23 @@ class BridgeClient(private val prefs: Prefs) {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (webSocket !== ws) return
-            ws = null
-            _conn.value = Conn.Offline
+            if (!lost(webSocket, Conn.Offline, null)) return
+            Log.i(TAG, "closed by the laptop ($code)")
             scheduleRetry(false)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            if (webSocket !== ws) return
-            ws = null
             val unauthorized = response?.code == 401
-            _conn.value = if (unauthorized) Conn.Unauthorized else Conn.Offline
-            _error.value = if (unauthorized) "The token was rejected" else (t.message ?: t.javaClass.simpleName)
+            val msg = if (unauthorized) "The token was rejected" else (t.message ?: t.javaClass.simpleName)
+            if (!lost(webSocket, if (unauthorized) Conn.Unauthorized else Conn.Offline, msg)) return
+            Log.i(TAG, "connection failed: $msg")
             scheduleRetry(unauthorized)
         }
+    }
+
+    private companion object {
+        const val TAG = "Bridge"
+        const val HANDSHAKE_MS = 45_000L
     }
 
     private fun mergeItems(o: JSONObject) {
