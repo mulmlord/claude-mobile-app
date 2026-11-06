@@ -229,22 +229,18 @@ fun ChatScreen(sid: String) {
                         }
                     },
                     actions = {
+                        // Kept to icons so the title keeps its room; GitHub lives in the ⋮ menu.
                         if (session?.status == "working") {
                             Surface(
                                 onClick = { act { bridge.keys(sid, "esc") } },
                                 shape = RoundedCornerShape(50), color = c.surface,
                                 border = BorderStroke(1.dp, c.borderStrong),
+                                modifier = Modifier.size(34.dp),
                             ) {
-                                Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(StopIcon, null, Modifier.size(12.dp), tint = c.text)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Stop", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = c.text)
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(StopIcon, "Stop", Modifier.size(13.dp), tint = c.text)
                                 }
                             }
-                            Spacer(Modifier.width(4.dp))
-                        }
-                        session?.repo?.let { repo ->
-                            IconButton(onClick = { Nav.go(Route.Repo(repo)) }) { Icon(BranchIcon, "GitHub", Modifier.size(20.dp), tint = c.muted) }
                         }
                         IconButton(onClick = { showTerminal = !showTerminal }) {
                             Box(
@@ -259,6 +255,7 @@ fun ChatScreen(sid: String) {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
                                 MenuEntry("Search") { menu = false; searching = true }
+                                session?.repo?.let { repo -> MenuEntry("GitHub") { menu = false; Nav.go(Route.Repo(repo)) } }
                                 MenuEntry("Rename…", enabled = session?.connected == true) { menu = false; renaming = true }
                                 MenuEntry("End session…", enabled = session != null) { menu = false; ending = true }
                             }
