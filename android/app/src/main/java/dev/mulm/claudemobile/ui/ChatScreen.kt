@@ -2,6 +2,8 @@ package dev.mulm.claudemobile.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.animation.animateContentSize
@@ -494,8 +496,8 @@ private fun MessageList(
             Box(Modifier.searchMark(if (isCurrent) hitFill else if (hit) otherFill else null, if (isCurrent) hitStroke else null)) {
                 when (item.kind) {
                     "user" -> UserBubble(item.text)
-                    // Summarised thinking: the laptop shows it like a message, so does the phone.
-                    "assistant", "thinking" -> AssistantText(item.text)
+                    "assistant" -> AssistantText(item.text)
+                    "thinking" -> ThinkingNote(item.text)
                     // A hit only in the command or output: open the row so the match can be seen.
                     "tool" -> ToolRow(item, reveal = isCurrent && !item.name.contains(q, true) && !item.summary.contains(q, true))
                     else -> SystemNote(item.text)
@@ -512,6 +514,24 @@ private fun UserBubble(text: String) {
         Surface(color = c.bubble, contentColor = c.text, shape = RoundedCornerShape(18.dp), modifier = Modifier.widthIn(max = 310.dp)) {
             SelectionContainer {
                 Text(text, fontSize = 15.5.sp, lineHeight = 22.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Summarised thinking (the laptop shows it among the messages): set apart from Claude's
+ * answers by a thin bar, a small "Thinking" label, and smaller, muted sans text.
+ */
+@Composable
+private fun ThinkingNote(text: String) {
+    val c = Claude.colors
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).height(IntrinsicSize.Min)) {
+        Box(Modifier.width(2.dp).fillMaxHeight().clip(RoundedCornerShape(1.dp)).background(c.borderStrong))
+        Column(Modifier.padding(start = 12.dp)) {
+            Text("Thinking", fontSize = 11.5.sp, fontWeight = FontWeight.Medium, color = c.faint)
+            SelectionContainer {
+                Text(text, fontSize = 14.sp, lineHeight = 20.sp, color = c.muted, modifier = Modifier.padding(top = 2.dp))
             }
         }
     }
