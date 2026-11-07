@@ -51,7 +51,8 @@ class MainActivity : ComponentActivity() {
         }
         val data = i.data
         if (data != null && data.scheme == "claudemobile" && data.host == "setup") {
-            Nav.go(Route.Settings(url = data.getQueryParameter("url") ?: "", token = data.getQueryParameter("token") ?: ""))
+            // No token in the link (e.g. only a new address): keep the saved one.
+            Nav.go(Route.Settings(url = data.getQueryParameter("url") ?: "", token = data.getQueryParameter("token")))
         }
     }
 

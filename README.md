@@ -109,7 +109,8 @@ sudo pacman -S tailscale
 sudo systemctl enable --now tailscaled
 sudo tailscale up                       # log in
 sudo tailscale set --operator=$USER     # lets pair-phone.sh run `tailscale serve`
-./pair-phone.sh                         # now pairs with http://<laptop>.<tailnet>.ts.net:8787
+# Tailscale admin console → DNS → HTTPS Certificates → Enable (once per tailnet)
+./pair-phone.sh                         # now pairs with https://<laptop>.<tailnet>.ts.net
 ```
 
 On the phone install Tailscale from the Play Store and log in with the same account.
@@ -138,11 +139,14 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
   sessions. It's only accepted in the `Authorization` header (never in URLs).
 * The app refuses to talk to a tailnet address (`*.ts.net`, `100.64.0.0/10`) while the phone has
   no VPN up, so a paused or killed Tailscale can't make it send the token to whatever the local
-  Wi-Fi's DNS answers. Turning on "Block connections without VPN" for Tailscale on the phone
-  adds the same protection system-wide.
-* Better still: enable HTTPS certificates for the tailnet (Tailscale admin console → DNS) and
-  serve the bridge over HTTPS (`tailscale serve --bg --https=8787 http://127.0.0.1:8787`, app
-  address `https://<laptop>.<tailnet>.ts.net:8787`); then the app can drop cleartext.
+  Wi-Fi's DNS answers. (Don't use Tailscale's "Block connections without VPN" for this: it cuts
+  the phone off completely whenever Tailscale hiccups.)
+* The app only talks HTTPS (`res/xml/network_security_config.xml`): the bridge is served by
+  `tailscale serve --bg --https=443 http://127.0.0.1:8787` with the tailnet's certificate (Tailscale
+  admin console → DNS → HTTPS Certificates), address `https://<laptop>.<tailnet>.ts.net`. The one
+  exception is `pair-phone.sh --usb` (`http://127.0.0.1` through `adb reverse`, never off the
+  cable). Pairings with an older `http://…:8787` address move themselves to `https://` once
+  the same host answers there with the token.
 * Allow/Deny from a notification is tied to the prompt it showed: the bridge reads the prompt's
   text off the session's screen, the notification shows it (when more than one tool call is
   waiting, instead of a guessed tool preview) and sends its fingerprint back; if a different

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs the app on the USB-connected phone and pre-fills its settings.
-#   ./pair-phone.sh            -> address = this laptop's Tailscale name (if Tailscale is up), else USB tunnel
+#   ./pair-phone.sh            -> address = https://<this laptop's Tailscale name> (if Tailscale is up), else USB tunnel
 #   ./pair-phone.sh --usb      -> address = http://127.0.0.1:8787 through `adb reverse` (works only while plugged in)
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -17,9 +17,11 @@ adb install -r "$APK"
 URL=""
 if [ "${1:-}" != "--usb" ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
     NAME=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
-    URL="http://$NAME:$PORT"
-    echo "==> Exposing the bridge to your tailnet only (tailscale serve, TCP $PORT)"
-    tailscale serve --bg --tcp "$PORT" "tcp://127.0.0.1:$PORT" >/dev/null
+    URL="https://$NAME"
+    # HTTPS with a Tailscale certificate (enable "HTTPS Certificates" in the admin console's
+    # DNS page first); the app refuses unencrypted connections except over the USB tunnel.
+    echo "==> Exposing the bridge to your tailnet only (tailscale serve, HTTPS)"
+    tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null
 fi
 if [ -z "$URL" ]; then
     echo "==> Tailscale not available: using a USB tunnel (only works while plugged in)"

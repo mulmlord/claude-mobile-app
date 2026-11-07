@@ -20,6 +20,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -95,6 +96,8 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
      * was dropped as stale, and the app sat on "Connecting…" with no socket at all.
      */
     private val connLock = Any()
+    /** An http:// address is being moved to https:// (see [upgradeToHttps]); guarded by [connLock]. */
+    private var upgrading = false
     /** Wall-clock time the connection went down (for "offline for …" in the log); 0 while up. */
     private var offlineSince = 0L
     /** elapsedRealtime of the last message from the bridge, for [probe]. */
@@ -203,6 +206,14 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
                 return
             }
             if (ws != null) return
+            if (needsHttps()) {
+                if (!upgrading) {
+                    upgrading = true
+                    _conn.value = Conn.Connecting
+                    scope.launch { upgradeToHttps() }
+                }
+                return
+            }
             val req = try {
                 Request.Builder().url(prefs.url + "/api/ws")
                     .header("Authorization", "Bearer " + prefs.token).build()
@@ -227,6 +238,45 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
                     scheduleRetry(false)
                 }
             }
+        }
+    }
+
+    /** http:// is blocked (res/xml/network_security_config.xml) except to this phone itself (adb reverse). */
+    private fun needsHttps(): Boolean {
+        val u = prefs.url.toHttpUrlOrNull() ?: return false
+        return !u.isHttps && u.host != "127.0.0.1" && u.host != "localhost"
+    }
+
+    /**
+     * Pairings from before 0.9.7 point at http://<laptop>.<tailnet>.ts.net:8787. The bridge is
+     * now also behind tailscale serve's HTTPS on 443: if the same machine answers there with
+     * this token, save that address. Nothing for the user to do.
+     */
+    private suspend fun upgradeToHttps() {
+        val candidate = prefs.url.toHttpUrlOrNull()?.let { "https://${it.host}" }
+        val ok = candidate != null && try {
+            call("/api/health", url = candidate)
+            true
+        } catch (e: Exception) {
+            Log.i(TAG, "no HTTPS at $candidate: ${e.message}")
+            false
+        }
+        synchronized(connLock) {
+            upgrading = false
+            if (ok) {
+                prefs.url = candidate!!
+            } else {
+                _conn.value = Conn.Offline
+                _error.value = HTTPS_ONLY
+            }
+        }
+        if (ok) {
+            Log.i(TAG, "switched to $candidate")
+            ConnLog.good("Switched to HTTPS: $candidate")
+            connect()
+        } else {
+            ConnLog.bad("Couldn't switch to HTTPS: ${candidate ?: prefs.url} didn't answer")
+            scheduleRetry(false)
         }
     }
 
@@ -341,8 +391,12 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val unauthorized = response?.code == 401
-            val (msg, tailscale) = if (unauthorized) "The token was rejected" to false
-                else describe(t, webSocket.request().url.host)
+            val (msg, tailscale) = when {
+                unauthorized -> "The token was rejected" to false
+                // tailscale serve answers for the laptop while nothing is behind it.
+                response?.code in 502..504 -> "The bridge on the laptop isn't answering" to false
+                else -> describe(t, webSocket.request().url.host)
+            }
             val drop = lost(webSocket, if (unauthorized) Conn.Unauthorized else Conn.Offline, msg)
             if (drop == Drop.Stale) return
             _tailscaleDown.value = tailscale
@@ -355,6 +409,7 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     /** A failure in words, and whether it means Tailscale isn't working on this phone. */
     private fun describe(t: Throwable, host: String): Pair<String, Boolean> = when {
         t.message == TailnetGuard.MESSAGE -> TailnetGuard.MESSAGE to true
+        t is java.net.UnknownServiceException -> HTTPS_ONLY to false
         // MagicDNS knows every tailnet machine, asleep or not: a failed lookup means the
         // phone's Tailscale isn't answering (or, with "Block connections without VPN", is down).
         t is UnknownHostException && TailnetGuard.isTailnet(host) -> "Tailscale isn't connected on this phone" to true
@@ -371,6 +426,7 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         const val TAG = "Bridge"
         const val HANDSHAKE_MS = 45_000L
         const val PROBE_MS = 10_000L
+        const val HTTPS_ONLY = "Use an https:// address. Unencrypted connections are off"
         /** Retries this soon keep the CPU awake; later ones wait for an alarm. */
         const val QUICK_RETRY_S = 10L
     }
@@ -514,7 +570,11 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
 
     /** Settings screen "Test": returns a human readable result. */
     suspend fun test(url: String, token: String): String {
-        val o = call("/api/health", url = url.trim().trimEnd('/'), token = token.trim())
+        val o = try {
+            call("/api/health", url = url.trim().trimEnd('/'), token = token.trim())
+        } catch (e: java.net.UnknownServiceException) {
+            throw BridgeError(HTTPS_ONLY)
+        }
         val n = o.optInt("sessions")
         return "Connected to ${o.optString("host")} · $n session${if (n == 1) "" else "s"}"
     }

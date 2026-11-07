@@ -73,7 +73,7 @@ fun SettingsScreen(route: Route.Settings) {
     val ctx = LocalContext.current
     val c = Claude.colors
     val scope = rememberCoroutineScope()
-    var url by rememberSaveable { mutableStateOf(route.url ?: prefs.url.ifBlank { "http://" }) }
+    var url by rememberSaveable { mutableStateOf(route.url ?: prefs.url.ifBlank { "https://" }) }
     var token by rememberSaveable { mutableStateOf(route.token ?: prefs.token) }
     var showToken by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -119,7 +119,7 @@ fun SettingsScreen(route: Route.Settings) {
             Section("Laptop connection") {
                 OutlinedTextField(
                     value = url, onValueChange = { url = it }, label = { Text("Bridge address") },
-                    supportingText = { Text("e.g. http://my-laptop:8787 (its Tailscale name)") },
+                    supportingText = { Text("e.g. https://my-laptop.your-tailnet.ts.net (its Tailscale name)") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(), shape = fieldShape, colors = claudeFieldColors(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
