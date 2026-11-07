@@ -494,7 +494,8 @@ private fun MessageList(
             Box(Modifier.searchMark(if (isCurrent) hitFill else if (hit) otherFill else null, if (isCurrent) hitStroke else null)) {
                 when (item.kind) {
                     "user" -> UserBubble(item.text)
-                    "assistant" -> AssistantText(item.text)
+                    // Summarised thinking: the laptop shows it like a message, so does the phone.
+                    "assistant", "thinking" -> AssistantText(item.text)
                     // A hit only in the command or output: open the row so the match can be seen.
                     "tool" -> ToolRow(item, reveal = isCurrent && !item.name.contains(q, true) && !item.summary.contains(q, true))
                     else -> SystemNote(item.text)

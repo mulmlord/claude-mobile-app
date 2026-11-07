@@ -290,6 +290,11 @@ class Transcript:
                 iid = f"{uuid}:{n}"
                 if bt == "text" and b.get("text", "").strip():
                     yield self._add({"id": iid, "kind": "assistant", "text": _clip(b["text"], MAX_TEXT), "ts": ts}, idx), False
+                elif bt == "thinking" and (b.get("thinking") or "").strip():
+                    # Summarised thinking: Claude Code shows it in the conversation like a
+                    # message (often in place of the text between two tool calls), so the
+                    # phone shows it too. Empty (hidden) thinking blocks stay out.
+                    yield self._add({"id": iid, "kind": "thinking", "text": _clip(b["thinking"].strip(), MAX_TEXT), "ts": ts}, idx), False
                 elif bt == "tool_use":
                     name = b.get("name", "?")
                     inp = b.get("input") or {}

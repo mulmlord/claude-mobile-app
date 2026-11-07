@@ -250,7 +250,7 @@ class Session:
             return ""
         for iid in reversed(self.transcript.order[-40:]):
             it = self.transcript.items[iid]
-            if it["kind"] in ("assistant", "user"):
+            if it["kind"] in ("assistant", "thinking", "user"):
                 return ("You: " if it["kind"] == "user" else "") + plain(it["text"], 160)
         return ""
 

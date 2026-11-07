@@ -78,7 +78,7 @@ def test_entries_that_are_not_chat(conv):
         conv.user("<local-command-caveat>Caveat: ...</local-command-caveat>"),
         conv.user("<system-reminder>be nice</system-reminder>"),
         conv.user("meta stuff", isMeta=True),
-        conv.assistant({"type": "thinking", "thinking": "hmm", "signature": "x"}, conv.text("   ")),
+        conv.assistant({"type": "thinking", "thinking": "", "signature": "x"}, conv.text("   ")),  # hidden thinking
         conv.system("turn_duration", durationMs=5),
         conv.system("stop_hook_summary"),
     )
@@ -401,3 +401,18 @@ def test_tool_items_carry_their_diff(conv):
     item = t.snapshot()[-1]
     assert item["diff"] == ["-a", "+b"] and item["add"] == 1 and item["del"] == 1
     assert item["summary"] == "a.txt"
+
+
+def test_summarised_thinking_shows_and_hidden_thinking_doesnt(conv):
+    # Claude Code shows summarised thinking in the conversation like a message, often in
+    # place of the text between two tool calls; an empty (hidden) block shows nothing.
+    bash = conv.tool_use("Bash", {"command": "make", "description": "Build"})
+    conv.write(
+        conv.prompt("check it"),
+        conv.assistant({"type": "thinking", "thinking": "", "signature": "x"}),
+        conv.assistant({"type": "thinking", "thinking": "Both fixes check out.\n\n", "signature": "y"}),
+        conv.assistant(bash),
+    )
+    t = Transcript(conv.path)
+    t.poll()
+    assert kinds(t) == [("user", "check it"), ("thinking", "Both fixes check out."), ("tool", "Bash")]
