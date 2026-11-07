@@ -22,9 +22,7 @@ with push notifications when a session finishes, needs permission, or asks a que
 * **Chat** shows the transcript (messages, tool calls with results). Sending a message
   types it into the session exactly as if you'd typed it at the laptop. Edit, MultiEdit and
   Write calls show a red/green line diff with +/− counts; one waiting for your permission
-  opens by itself. The composer has a mic (Android speech-to-text) and quick actions:
-  Continue, Yes, `/compact`, Switch mode (Shift+Tab, opens `>_` to show the mode) and
-  `/clear` (asks first). The **+** button sends a photo (shrunk to 2000 px JPEG) to
+  opens by itself. The composer has a mic (Android speech-to-text). The **+** button sends a photo (shrunk to 2000 px JPEG) to
   `~/.cache/claude-mobile/uploads/` (kept 14 days) and puts its path in the message, where
   Claude reads it. The chat header shows how full the context is (models seen past 200k
   tokens count as 1M, remembered in `big_context_models`).
@@ -59,7 +57,7 @@ with push notifications when a session finishes, needs permission, or asks a que
   installer. Android asks once to allow installs from Claude Mobile.
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
-  live terminal plus Esc/arrows/Enter for anything else: in the laptop's colours (the bridge
+  live terminal, in the laptop's colours (the bridge
   sends style runs from pyte; the app maps the 16 ANSI colours to a warm palette), wrapped to
   the phone's width, with prompt-box side walls removed, rules drawn as hairlines and long
   runs of padding shrunk; the status lines under the prompt box keep one row each (one font

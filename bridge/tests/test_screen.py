@@ -251,3 +251,49 @@ def test_modify_other_keys_isnt_underline_and_dim():
     lines, runs, styles = styled(b"\x1b[>4;2mhello \x1b[1mbold\x1b[22m\x1b[>4m")
     assert lines == ["hello bold"]
     assert spans(lines, runs, styles)[0] == [("hello ", ["", "", 0]), ("bold", ["", "", screen_mod.BOLD])]
+
+
+def test_a_prompt_with_line_breaks_isnt_a_menu():
+    sc = Screen(60, 12)
+    sc.feed(screen_bytes([
+        "● Done.",
+        "",
+        "────────────────────────────────────────────",
+        "❯ first line of my message",
+        "  second line",
+        "  third line",
+        "  fourth line",
+        "────────────────────────────────────────────",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+    ]))
+    assert sc.dialog_options() == [] and sc.dialog_text() == ""
+
+
+def test_a_menu_under_a_rule_is_still_a_menu():
+    sc = Screen(60, 12)
+    sc.feed(screen_bytes([
+        "────────────────────────────────────────────",
+        " Do you want to proceed?",
+        " ❯ 1. Yes",
+        "   2. No",
+    ]))
+    assert [o["label"] for o in sc.dialog_options()] == ["Yes", "No"]
+
+
+def test_your_message_in_the_conversation_isnt_a_menu():
+    sc = Screen(70, 14)
+    sc.feed(screen_bytes([
+        "  terracotta, the app's color for main",
+        "  actions:",
+        "",
+        "  Ran 1 shell command",
+        "",
+        "❯ also i dont need buttons in terminal",
+        "",
+        "✻ Discombobulating… (4m 14s)",
+        "──────────────────────────────────────────",
+        "❯",
+        "──────────────────────────────────────────",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+    ]))
+    assert sc.dialog_options() == []

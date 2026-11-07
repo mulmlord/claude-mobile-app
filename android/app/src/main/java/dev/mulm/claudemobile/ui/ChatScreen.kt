@@ -2,6 +2,15 @@ package dev.mulm.claudemobile.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -141,7 +150,6 @@ fun ChatScreen(sid: String) {
     val items = allItems[sid].orEmpty()
     val conn by bridge.conn.collectAsState()
     var showTerminal by rememberSaveable { mutableStateOf(false) }
-    var confirmClear by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var ending by remember { mutableStateOf(false) }
@@ -210,63 +218,22 @@ fun ChatScreen(sid: String) {
                     position = if (query.isBlank()) null else "${cur + 1} / ${matches.size}",
                     hasMatches = matches.isNotEmpty(),
                     onPrev = { step(-1) }, onNext = { step(1) }, onClose = { closeSearch() },
-                ) else TopAppBar(
-                    colors = claudeTopBarColors(),
-                    navigationIcon = {
-                        IconButton(onClick = { Nav.go(Route.Sessions) }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                ) else ChatHeader(
+                    session = session, terminalOpen = showTerminal,
+                    onBack = { Nav.go(Route.Sessions) },
+                    onStop = { act { bridge.keys(sid, "esc") } },
+                    onTerminal = { showTerminal = !showTerminal },
+                ) {
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = c.muted) }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
+                            MenuEntry("Search") { menu = false; searching = true }
+                            session?.repo?.let { repo -> MenuEntry("GitHub") { menu = false; Nav.go(Route.Repo(repo)) } }
+                            MenuEntry("Rename…", enabled = session?.connected == true) { menu = false; renaming = true }
+                            MenuEntry("End session…", enabled = session != null) { menu = false; ending = true }
                         }
-                    },
-                    title = {
-                        Column {
-                            Text(
-                                session?.title?.ifBlank { null } ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text,
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    if (session == null) "Session ended" else "${session.project} · ${statusText(session)}",
-                                    fontSize = 12.5.sp, color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false),
-                                )
-                                if (session != null && session.context > 0) {
-                                    val pct = (session.context * 100 / session.contextMax).toInt()
-                                    Text(
-                                        " · $pct% context", fontSize = 12.5.sp, maxLines = 1,
-                                        color = if (pct >= 80) c.accentButton else c.faint,
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    actions = {
-                        // Kept to icons so the title keeps its room; GitHub lives in the ⋮ menu.
-                        AnimatedVisibility(
-                            visible = session?.status == "working",
-                            enter = fadeIn() + scaleIn(initialScale = 0.7f) + expandHorizontally(expandFrom = Alignment.End),
-                            exit = fadeOut() + scaleOut(targetScale = 0.7f) + shrinkHorizontally(shrinkTowards = Alignment.End),
-                        ) {
-                            Row {
-                                HeaderButton(onClick = { act { bridge.keys(sid, "esc") } }, tint = c.danger, active = true, pulse = true) {
-                                    Icon(StopIcon, "Stop", Modifier.size(12.dp), tint = c.danger)
-                                }
-                                Spacer(Modifier.width(8.dp))
-                            }
-                        }
-                        HeaderButton(onClick = { showTerminal = !showTerminal }, tint = c.accentButton, active = showTerminal) {
-                            Icon(TerminalIcon, "Terminal", Modifier.size(19.dp), tint = if (showTerminal) c.accentButton else c.muted)
-                        }
-                        Box {
-                            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
-                                MenuEntry("Search") { menu = false; searching = true }
-                                session?.repo?.let { repo -> MenuEntry("GitHub") { menu = false; Nav.go(Route.Repo(repo)) } }
-                                MenuEntry("Rename…", enabled = session?.connected == true) { menu = false; renaming = true }
-                                MenuEntry("End session…", enabled = session != null) { menu = false; ending = true }
-                            }
-                        }
-                    },
-                )
+                    }
+                }
                 HorizontalDivider(thickness = 1.dp, color = c.border)
             }
         },
@@ -278,7 +245,7 @@ fun ChatScreen(sid: String) {
                 val screen by bridge.screen.collectAsState()
                 val sc = screen?.takeIf { it.sid == sid }
                 AnimatedVisibility(visible = showTerminal) {
-                    TerminalPanel(sc, onKeys = { keys -> act { bridge.keys(sid, *keys) } }, onRedraw = { act { bridge.redraw(sid) } })
+                    TerminalPanel(sc, onRedraw = { act { bridge.redraw(sid) } })
                 }
                 if (needsYou || (sc != null && sc.options.isNotEmpty())) {
                     MenuPanel(session, sc,
@@ -287,18 +254,6 @@ fun ChatScreen(sid: String) {
                 }
                 val live = session?.connected == true && conn == Conn.Connected
                 Composer(
-                    quickActions = if (!live || needsYou) null else {
-                        {
-                            QuickActions(
-                                onText = { t -> act { bridge.sendText(sid, t) } },
-                                onMode = {
-                                    act { bridge.keys(sid, "shift-tab") }
-                                    showTerminal = true
-                                },
-                                onClear = { confirmClear = true },
-                            )
-                        }
-                    },
                     enabled = live,
                     onAttach = { uri -> bridge.upload(sid, prepareImage(ctx, uri), "image/jpeg") },
                     onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
@@ -322,67 +277,69 @@ fun ChatScreen(sid: String) {
     }
     if (renaming && session != null) RenameSessionDialog(session) { renaming = false }
     if (ending && session != null) EndSessionDialog(session) { ending = false }
-    if (confirmClear) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            containerColor = c.surface,
-            title = { Text("Clear this conversation?", fontFamily = Serif, fontSize = 21.sp, color = c.text) },
-            text = {
-                Text("Claude starts fresh in this session. The old conversation stays in your history and can be resumed later.",
-                    fontSize = 14.sp, lineHeight = 20.sp, color = c.muted)
-            },
-            confirmButton = {
-                TextButton(onClick = { confirmClear = false; act { bridge.sendText(sid, "/clear") } }) {
-                    Text("Clear", color = c.danger, fontWeight = FontWeight.Medium)
-                }
-            },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel", color = c.muted) } },
-        )
-    }
 }
 
 /**
- * The chat header's round-cornered icon buttons: tinted while active (terminal open, Stop),
- * outlined otherwise; [pulse] breathes the border while Claude works.
+ * The chat's header. Title and subtitle wrap instead of ending in "…", so the header grows a
+ * line when it needs one. On the right, like the Claude app: a terracotta stop button while
+ * Claude works (the same colour as send), the terminal toggle, and the ⋮ menu.
  */
 @Composable
-private fun HeaderButton(onClick: () -> Unit, tint: Color, active: Boolean, pulse: Boolean = false, content: @Composable () -> Unit) {
+private fun ChatHeader(
+    session: SessionInfo?, terminalOpen: Boolean,
+    onBack: () -> Unit, onStop: () -> Unit, onTerminal: () -> Unit,
+    menu: @Composable () -> Unit,
+) {
     val c = Claude.colors
-    val fill by animateColorAsState(if (active) tint.copy(alpha = if (c.dark) 0.20f else 0.12f) else c.surface, label = "fill")
-    val edge by animateColorAsState(if (active) tint.copy(alpha = 0.45f) else c.border, label = "edge")
-    val breath = if (pulse) {
-        val t = rememberInfiniteTransition(label = "pulse")
-        t.animateFloat(0.35f, 0.9f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "pulse").value
-    } else 1f
-    Surface(
-        onClick = onClick, shape = RoundedCornerShape(12.dp), color = fill,
-        border = BorderStroke(1.dp, if (pulse) edge.copy(alpha = edge.alpha * breath) else edge),
-        modifier = Modifier.size(38.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) { content() }
-    }
-}
-
-/** One-tap replies and commands, shown above the empty composer. */
-@Composable
-private fun QuickActions(onText: (String) -> Unit, onMode: () -> Unit, onClear: () -> Unit) {
-    val c = Claude.colors
+    val working = session?.status == "working" && session.connected
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxWidth().background(c.bg).windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        @Composable
-        fun chip(label: String, mono: Boolean = false, onClick: () -> Unit) {
-            Surface(onClick = onClick, shape = RoundedCornerShape(50), color = c.surface, border = BorderStroke(1.dp, c.border)) {
-                Text(label, fontSize = 13.5.sp, color = c.text, fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp))
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = c.text) }
+        Column(Modifier.weight(1f).padding(start = 2.dp, end = 6.dp).animateContentSize(tween(200))) {
+            Text(
+                session?.title?.ifBlank { null } ?: "Session",
+                fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
+            )
+            Text(
+                buildAnnotatedString {
+                    if (session == null) {
+                        append("Session ended")
+                        return@buildAnnotatedString
+                    }
+                    append("${session.project} · ${statusText(session)}")
+                    if (session.context > 0) {
+                        val pct = (session.context * 100 / session.contextMax).toInt()
+                        append(" · ")
+                        if (pct >= 80) withStyle(SpanStyle(color = c.accentButton)) { append("$pct% context") }
+                        else append("$pct% context")
+                    }
+                },
+                fontSize = 12.5.sp, lineHeight = 17.sp, color = c.faint, modifier = Modifier.padding(top = 1.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = working,
+            enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.6f) + expandHorizontally(tween(220), expandFrom = Alignment.End),
+            exit = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 0.6f) + shrinkHorizontally(tween(180), shrinkTowards = Alignment.End),
+        ) {
+            Row {
+                Surface(onClick = onStop, shape = CircleShape, color = c.accentButton, modifier = Modifier.size(36.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(11.dp).clip(RoundedCornerShape(2.5.dp)).background(c.onAccent).semantics { contentDescription = "Stop" })
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
             }
         }
-        chip("Continue") { onText("continue") }
-        chip("Yes") { onText("yes") }
-        chip("/compact", mono = true) { onText("/compact") }
-        chip("Switch mode") { onMode() }
-        chip("/clear", mono = true) { onClear() }
+        val fill by animateColorAsState(if (terminalOpen) c.raised else Color.Transparent, tween(200), label = "terminal")
+        val tint by animateColorAsState(if (terminalOpen) c.text else c.muted, tween(200), label = "terminalIcon")
+        Surface(onClick = onTerminal, shape = CircleShape, color = fill, modifier = Modifier.size(36.dp)) {
+            Box(contentAlignment = Alignment.Center) { Icon(TerminalIcon, "Terminal", Modifier.size(18.dp), tint = tint) }
+        }
+        menu()
     }
 }
 
@@ -601,11 +558,16 @@ private fun ToolRow(item: Item, reveal: Boolean = false) {
             Modifier.fillMaxWidth().clickable { manual = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            // Drawn icons, not ✓/✕ glyphs: a glyph sits on the text baseline, off the row's centre.
+            Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
                 when (item.status) {
-                    "running" -> CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = c.accent)
-                    "error" -> Text("✕", color = c.danger, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    else -> Text("✓", color = c.faint, fontSize = 13.sp)
+                    "running" -> CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp, color = c.accent)
+                    "error" -> Box(Modifier.size(20.dp).background(c.danger.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Close, "Failed", Modifier.size(12.dp), tint = c.danger)
+                    }
+                    else -> Box(Modifier.size(20.dp).background(c.success.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Check, "Done", Modifier.size(13.dp), tint = c.success)
+                    }
                 }
             }
             Spacer(Modifier.width(8.dp))
@@ -766,7 +728,6 @@ private fun MenuPanel(session: SessionInfo?, sc: ScreenState?, onSelect: (Int) -
 @Composable
 private fun Composer(
     enabled: Boolean, hint: String, onSend: (String, () -> Unit) -> Unit,
-    quickActions: (@Composable () -> Unit)? = null,
     onAttach: (suspend (Uri) -> String)? = null,
     onError: (String) -> Unit = {},
 ) {
@@ -808,9 +769,6 @@ private fun Composer(
             text = ""
             onSend(t) { text = t }
         }
-    }
-    if (quickActions != null && text.isEmpty()) {
-        Box(Modifier.padding(top = 8.dp)) { quickActions() }
     }
     Surface(
         shape = RoundedCornerShape(24.dp), color = c.surface, border = BorderStroke(1.dp, c.border),

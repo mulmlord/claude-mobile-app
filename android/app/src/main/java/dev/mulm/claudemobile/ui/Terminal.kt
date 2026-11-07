@@ -285,7 +285,7 @@ private fun spanFor(st: TermStyle): SpanStyle? {
 }
 
 @Composable
-internal fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit, onRedraw: () -> Unit) {
+internal fun TerminalPanel(sc: ScreenState?, onRedraw: () -> Unit) {
     val c = Claude.colors
     val v = rememberScrollState()
     val content = remember(sc) { sc?.let { blocks(it) } }
@@ -335,35 +335,6 @@ internal fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit, on
                                 Modifier.fillMaxWidth().padding(vertical = 3.dp).height(1.dp).background(b.color.copy(alpha = 0.45f)),
                             )
                         }
-                    }
-                }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(TermPalette.border))
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 9.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                val red = Color(0xFFE5735F)
-                val blue = Color(0xFF7FA7D9)
-                val green = Color(0xFF8FBF8F)
-                val plain = TermPalette.fg
-                val keys = listOf(
-                    Triple("Esc", "esc", red), Triple("Enter", "enter", c.accent),
-                    Triple("↑", "up", plain), Triple("↓", "down", plain), Triple("←", "left", plain), Triple("→", "right", plain),
-                    Triple("Tab", "tab", blue), Triple("⇧Tab", "shift-tab", blue),
-                    Triple("1", "1", green), Triple("2", "2", green), Triple("3", "3", green),
-                    Triple("^C", "ctrl-c", red),
-                )
-                keys.forEach { (label, key, tint) ->
-                    Surface(
-                        onClick = { onKeys(arrayOf(key)) }, shape = RoundedCornerShape(9.dp),
-                        color = tint.copy(alpha = if (tint == plain) 0.07f else 0.16f),
-                        border = BorderStroke(1.dp, tint.copy(alpha = if (tint == plain) 0.14f else 0.38f)),
-                    ) {
-                        Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-                            color = if (tint == plain) TermPalette.fg else tint,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
                     }
                 }
             }

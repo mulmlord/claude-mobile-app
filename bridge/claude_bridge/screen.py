@@ -198,6 +198,10 @@ class Screen:
         lines = self.lines()[-40:]
         sel = None
         for i in range(len(lines) - 1, -1, -1):
+            # The prompt you type into (❯ under a ─── rule), even empty: no menu is open, and a
+            # ❯ further up is a message of yours in the conversation, not a menu's cursor.
+            if lines[i].strip().startswith("❯") and i > 0 and lines[i - 1].strip().startswith("─"):
+                return []
             m = self._SEL_RE.match(lines[i])
             if m:
                 sel = (i, m)
@@ -206,11 +210,6 @@ class Screen:
             return []
         i, m = sel
         col = len(m.group(1)) + len(m.group(2)) + len(m.group(3))
-        # the prompt input box (between two ─── rules) is not a menu
-        above = lines[i - 1].strip() if i > 0 else ""
-        below = lines[i + 1].strip() if i + 1 < len(lines) else ""
-        if above.startswith("─") and below.startswith("─"):
-            return []
 
         def label_at(line):
             if len(line) <= col or line[col] == " ":
