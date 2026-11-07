@@ -274,7 +274,7 @@ fun ChatScreen(sid: String) {
         MessageList(
             items, pad, working = session?.status == "working" && session.connected,
             query = query, matches = remember(matches) { matches.toSet() },
-            current = if (searching) matches.getOrNull(cur) else null, jump = jump,
+            current = if (searching) matches.getOrNull(cur) else null, jump = jump, searching = searching,
         )
     }
     if (renaming && session != null) RenameSessionDialog(session) { renaming = false }
@@ -444,9 +444,17 @@ private fun statusText(s: SessionInfo) = when {
 private fun MessageList(
     items: List<Item>, pad: PaddingValues, working: Boolean,
     query: String = "", matches: Set<String> = emptySet(), current: String? = null, jump: Int = 0,
+    searching: Boolean = false,
 ) {
     val c = Claude.colors
     val state = rememberLazyListState()
+    // Closing the search goes back to the newest messages: left at an old hit, the chat looked
+    // as if new lines were missing (they were further down).
+    var wasSearching by remember { mutableStateOf(false) }
+    LaunchedEffect(searching) {
+        if (wasSearching && !searching) state.animateScrollToItem(0)
+        wasSearching = searching
+    }
     val reversed = remember(items) { items.asReversed() }
     // The working spark is the bottom row too, so its appearing must scroll down as well.
     // Not while a search hit is shown, though: new messages mustn't pull the list away from it.
