@@ -75,7 +75,7 @@ private object TermPalette {
     }
 }
 
-private sealed interface TermBlock {
+internal sealed interface TermBlock {
     /** [fit]: the status lines under the prompt box, each shrunk to one row like on the laptop. */
     data class Text(val text: AnnotatedString, val fit: Boolean = false) : TermBlock
     /** A full-width ─── line: drawn as a hairline instead of wrapping into rows of dashes. */
@@ -93,15 +93,18 @@ private val STAND_INS = mapOf(
 private val glyphPaint by lazy { android.graphics.Paint().apply { typeface = android.graphics.Typeface.MONOSPACE } }
 private val drawable = HashMap<Int, Boolean>()
 
+/** Whether a font on this phone has [cp] (asked once per character). */
+private fun fontCanDraw(cp: Int): Boolean = drawable.getOrPut(cp) { glyphPaint.hasGlyph(String(Character.toChars(cp))) }
+
 /** [t] with characters no font on this phone can draw swapped for a stand-in. */
-private fun drawableText(t: String): String {
+internal fun drawableText(t: String, canDraw: (Int) -> Boolean = ::fontCanDraw): String {
     if (t.all { it.code < 0x2300 }) return t
     val sb = StringBuilder(t.length)
     var i = 0
     while (i < t.length) {
         val cp = t.codePointAt(i)
         val n = Character.charCount(cp)
-        val ok = cp < 0x2300 || drawable.getOrPut(cp) { glyphPaint.hasGlyph(String(Character.toChars(cp))) }
+        val ok = cp < 0x2300 || canDraw(cp)
         val sub = if (ok) null else STAND_INS[t[i]]
         if (sub != null) sb.append(sub) else sb.append(t, i, i + n)
         i += n
@@ -113,7 +116,7 @@ private const val BOX_CHARS = "─━═╌╍┄┅┈┉╭╮╰╯┌┐└�
 private val SIDE = charArrayOf('│', '┃', '|')
 
 /** A line as (text, style) runs, from the bridge's code-point runs. */
-private fun segments(line: String, runs: IntArray?, styles: List<TermStyle>): List<Pair<String, TermStyle>> {
+internal fun segments(line: String, runs: IntArray?, styles: List<TermStyle>): List<Pair<String, TermStyle>> {
     if (runs == null || runs.isEmpty()) return listOf(line to TermStyle.Plain)
     val out = ArrayList<Pair<String, TermStyle>>()
     var at = 0
@@ -135,7 +138,7 @@ private val GAP = Regex(" {6,}")
  * characters) shrink to three, so they don't wrap into empty rows. Indentation stays, up to
  * 11 spaces; deeper leading space is alignment and becomes four.
  */
-private fun squeeze(segs: List<Pair<String, TermStyle>>): List<Pair<String, TermStyle>> {
+internal fun squeeze(segs: List<Pair<String, TermStyle>>): List<Pair<String, TermStyle>> {
     val text = segs.joinToString("") { it.first }
     val lead = text.indexOfFirst { it != ' ' }
     if (lead < 0) return segs
@@ -169,7 +172,7 @@ private fun cut(segs: List<Pair<String, TermStyle>>, from: Int, to: Int): List<P
  * scrolling sideways, so the boxes Claude Code draws around its prompt lose their side walls
  * (they'd wrap into a mess), full-width rules become hairlines, and runs of blank lines shrink to one.
  */
-private fun blocks(sc: ScreenState): List<TermBlock> {
+internal fun blocks(sc: ScreenState, canDraw: (Int) -> Boolean = ::fontCanDraw): List<TermBlock> {
     val out = ArrayList<TermBlock>()
     val cur = ArrayList<List<Pair<String, TermStyle>>>()
     fun flush() {
@@ -179,7 +182,7 @@ private fun blocks(sc: ScreenState): List<TermBlock> {
             cur.forEachIndexed { i, segs ->
                 if (i > 0) append('\n')
                 for ((raw, st) in segs) {
-                    val t = drawableText(raw)
+                    val t = drawableText(raw, canDraw)
                     val span = spanFor(st)
                     if (span == null) append(t) else { pushStyle(span); append(t); pop() }
                 }

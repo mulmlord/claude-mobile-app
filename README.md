@@ -184,7 +184,8 @@ Config (`~/.config/claude-mobile/config.json`): `keep_awake` (`working`|`always`
 ## Tests
 
 ```bash
-cd bridge && uv run pytest     # the bridge's suite: offline, a few seconds
+cd bridge && uv run pytest                      # the bridge's suite: offline, a few seconds
+cd android && ./gradlew testDebugUnitTest       # the app's: terminal view clean-up, widget (Robolectric)
 ```
 
 The service runs from its own environment (`~/.local/share/claude-mobile/venv`, made by
