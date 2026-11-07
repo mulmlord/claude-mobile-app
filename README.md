@@ -68,7 +68,14 @@ with push notifications when a session finishes, needs permission, or asks a que
   closing the lid doesn't suspend mid-task. Settings → "Keep the laptop awake" switches
   between *While working*, *Always* (use before leaving home) and *Off*.
 * **Notifications** come over a persistent socket held by a foreground service (no Google
-  push, no accounts). Permission notifications have Allow/Deny and say what's waiting
+  push, no accounts). Deep sleep doesn't stall it: after a drop the app retries at 1, 2, 4
+  and 8 s holding a short wakelock, later retries and a 15-minute check (which also pings the
+  bridge, in case the socket died while the phone slept) use allow-while-idle alarms, and the
+  bridge gives a sleeping phone a minute to answer its pings. After ~3 minutes of failures
+  with the screen off it retries every 5 minutes; opening the app tries at once. When the
+  phone's Tailscale is the problem, the app and the status notification say so and offer
+  **Open Tailscale**. Permission notifications have Allow/Deny/**Tell Claude…** (deny and type
+  what to do instead) and say what's waiting
   ("Edit · app/src/x.kt (+3 −1)"); expanded, they show a compact red/green diff of the
   edit or the Bash command, so you can decide from the shade. Questions (AskUserQuestion
   with a single single-choice question) get up to three of their options as buttons; the
@@ -105,7 +112,9 @@ sudo tailscale set --operator=$USER     # lets pair-phone.sh run `tailscale serv
 
 On the phone install Tailscale from the Play Store and log in with the same account.
 In Claude Mobile → Settings, allow the background connection (battery optimization),
-otherwise Android may delay notifications.
+otherwise Android may delay notifications. Give Tailscale "No restrictions" for battery
+(and Autostart on Xiaomi) too, and leave its "Block connections without VPN" off: with it
+on, every Tailscale hiccup cuts the phone off completely until Tailscale reconnects.
 
 The laptop has to stay awake (not suspended) for any of this to work.
 
@@ -141,7 +150,7 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 
 `GET /api/sessions`, `GET /api/sessions/{id}/items`, `GET /api/sessions/{id}/screen`,
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
-`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?}`,
+`POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?, "message"?}` (with `no`: typed in as the next turn once the prompt closes),
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
 `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
 or a dialog is open),

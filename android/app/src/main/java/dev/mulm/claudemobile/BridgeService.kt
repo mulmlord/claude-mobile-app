@@ -68,7 +68,7 @@ class BridgeService : Service() {
             }
         }
         scope.launch {
-            combine(bridge.conn, bridge.host, bridge.sessions) { c, host, list ->
+            combine(bridge.conn, bridge.host, bridge.sessions, bridge.tailscaleDown) { c, host, list, tailscaleDown ->
                 when (c) {
                     Conn.Connected -> {
                         val busy = list.count { it.status == "working" }
@@ -82,7 +82,7 @@ class BridgeService : Service() {
                     Conn.Connecting -> "Connecting…"
                     Conn.Unauthorized -> "Token rejected. Open settings"
                     Conn.NotConfigured -> "Not set up"
-                    Conn.Offline -> "Laptop unreachable, retrying"
+                    Conn.Offline -> if (tailscaleDown) "Tailscale isn't connected on this phone" else "Laptop unreachable, retrying"
                 }
             }.distinctUntilChanged().collect { text ->
                 getSystemService(NotificationManager::class.java)

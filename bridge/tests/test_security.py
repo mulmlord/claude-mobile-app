@@ -161,3 +161,36 @@ def test_transcript_skips_lines_that_arent_objects(tmp_path):
 
 def test_cancelled_checks_dont_count_as_passing():
     assert checks_state([{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"}]) == "FAILURE"
+
+
+# ---- deny and tell Claude what to do instead --------------------------------------------------
+async def test_deny_with_a_message_types_it_once_the_prompt_closes(api, wrappers):
+    w = await wrappers("w1")
+    await show(w, PERMISSION_BOXED)
+    call = asyncio.create_task(api.post("/api/sessions/w1/answer", json={"choice": "no", "message": "use make clean"}))
+    assert await w.inputs(quiet=0.3) == [b"3"]  # nothing typed while the prompt is up
+    await show(w, ["Interrupted by user", "> "])
+    r = await call
+    assert r.status == 200 and (await r.json())["sent"] is True
+    assert await w.inputs(quiet=0.5) == [b"use make clean", b"\r"]
+
+
+async def test_deny_with_a_message_types_nothing_if_the_prompt_stays(api, wrappers, monkeypatch):
+    monkeypatch.setattr(server, "MESSAGE_WAIT", 0.3)
+    w = await wrappers("w1")
+    await show(w, PERMISSION_BOXED)
+    r = await api.post("/api/sessions/w1/answer", json={"choice": "no", "message": "use make clean"})
+    assert r.status == 409 and "wasn't sent" in await r.text()
+    assert await w.inputs() == [b"3"]
+
+
+async def test_a_message_only_goes_with_no(api, wrappers):
+    w = await wrappers("w1")
+    await show(w, PERMISSION_BOXED)
+    r = await api.post("/api/sessions/w1/answer", json={"choice": "yes", "message": "and also"})
+    assert r.status == 400
+    assert await w.inputs() == []
+
+
+def test_ws_heartbeat_tolerates_a_sleeping_phone():
+    assert server.WS_HEARTBEAT >= 90  # the phone gets WS_HEARTBEAT / 2 to answer a ping

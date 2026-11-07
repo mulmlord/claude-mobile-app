@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Keeps the CPU up for a few seconds while reconnecting after a drop in deep sleep. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Settings > Update app installs new builds downloaded from the laptop. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -16,6 +18,8 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
+        <!-- "Open Tailscale" when the phone's Tailscale isn't connected. -->
+        <package android:name="com.tailscale.ipn" />
     </queries>
 
     <application

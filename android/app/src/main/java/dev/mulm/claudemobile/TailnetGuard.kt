@@ -47,4 +47,13 @@ object TailnetGuard {
     }
 
     const val MESSAGE = "Tailscale is off on this phone"
+
+    private const val TAILSCALE = "com.tailscale.ipn"
+
+    /** Opens the Tailscale app so the user can reconnect it; false if it isn't installed. */
+    fun openTailscale(ctx: android.content.Context): Boolean {
+        val i = ctx.packageManager.getLaunchIntentForPackage(TAILSCALE) ?: return false
+        ctx.startActivity(i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        return true
+    }
 }

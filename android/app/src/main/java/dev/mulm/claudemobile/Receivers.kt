@@ -14,6 +14,8 @@ class ActionReceiver : BroadcastReceiver() {
         const val REPLY = "dev.mulm.claudemobile.REPLY"
         const val ANSWER = "dev.mulm.claudemobile.ANSWER"
         const val CHOOSE = "dev.mulm.claudemobile.CHOOSE"
+        /** Deny a permission prompt and send the typed text as what Claude should do instead. */
+        const val DENY_WITH = "dev.mulm.claudemobile.DENY_WITH"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -34,6 +36,11 @@ class ActionReceiver : BroadcastReceiver() {
                         val choice = intent.getStringExtra("choice") ?: "yes"
                         bridge.answer(sid, choice, intent.getStringExtra(Notifier.EXTRA_DH))
                         Notifier.confirm(context, sid, if (choice == "no") "Denied" else "Allowed", error = false)
+                    }
+                    DENY_WITH -> {
+                        val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notifier.KEY_REPLY)?.toString()
+                        bridge.answer(sid, "no", intent.getStringExtra(Notifier.EXTRA_DH), text?.trim())
+                        Notifier.confirm(context, sid, if (text.isNullOrBlank()) "Denied" else "Denied · told Claude: ${text.take(50)}", error = false)
                     }
                     CHOOSE -> {
                         val label = intent.getStringExtra("choice").orEmpty()

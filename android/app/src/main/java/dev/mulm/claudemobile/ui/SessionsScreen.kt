@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import dev.mulm.claudemobile.App
 import dev.mulm.claudemobile.Conn
 import dev.mulm.claudemobile.SessionInfo
+import dev.mulm.claudemobile.TailnetGuard
 import kotlinx.coroutines.delay
 import java.util.Calendar
 import dev.mulm.claudemobile.Updater
@@ -83,6 +84,7 @@ fun SessionsScreen() {
     val conn by bridge.conn.collectAsState()
     val host by bridge.host.collectAsState()
     val error by bridge.error.collectAsState()
+    val tailscaleDown by bridge.tailscaleDown.collectAsState()
     val sessions by bridge.sessions.collectAsState()
     val awake by bridge.awake.collectAsState()
     val build by bridge.appBuild.collectAsState()
@@ -140,11 +142,19 @@ fun SessionsScreen() {
                     fontFamily = Serif, fontSize = 26.sp, color = c.text, textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.size(10.dp))
+                val offTailscale = tailscaleDown && conn != Conn.Connected
                 Text(
-                    if (conn == Conn.Connected) "Start one from here, or run claude on your laptop and it shows up."
-                    else "Make sure the laptop is awake and Tailscale is on.",
+                    when {
+                        conn == Conn.Connected -> "Start one from here, or run claude on your laptop and it shows up."
+                        offTailscale -> "Tailscale isn't connected on this phone. Reconnect it and the app follows within seconds."
+                        else -> "Make sure the laptop is awake and Tailscale is on."
+                    },
                     textAlign = TextAlign.Center, color = c.muted, fontSize = 15.sp, lineHeight = 22.sp,
                 )
+                if (offTailscale) {
+                    Spacer(Modifier.size(22.dp))
+                    PrimaryButton(onClick = { TailnetGuard.openTailscale(ctx) }) { Text("Open Tailscale") }
+                }
                 if (conn == Conn.Connected) {
                     Spacer(Modifier.size(22.dp))
                     PrimaryButton(onClick = { Nav.go(Route.NewSession) }) {
@@ -177,6 +187,18 @@ fun SessionsScreen() {
                             }
                             Spacer(Modifier.size(10.dp))
                             ConnLine(conn, host, error, awake)
+                            if (tailscaleDown && conn != Conn.Connected) {
+                                Surface(
+                                    onClick = { TailnetGuard.openTailscale(ctx) }, shape = RoundedCornerShape(12.dp),
+                                    color = c.danger.copy(alpha = 0.10f), modifier = Modifier.padding(top = 14.dp),
+                                ) {
+                                    Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Tailscale isn't connected", fontSize = 13.5.sp, color = c.text)
+                                        Spacer(Modifier.width(10.dp))
+                                        Text("Open Tailscale ›", fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = c.accentButton)
+                                    }
+                                }
+                            }
                             build?.takeIf { it.versionCode > installed }?.let { b ->
                                 Surface(
                                     onClick = { Nav.go(Route.Settings()) }, shape = RoundedCornerShape(12.dp),

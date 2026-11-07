@@ -18,7 +18,7 @@ class App : Application() {
         super.onCreate()
         instance = this
         prefs = Prefs(this)
-        bridge = BridgeClient(prefs)
+        bridge = BridgeClient(this, prefs)
         Notifier.createChannels(this)
         Updater.cleanup(this)
     }

@@ -110,6 +110,14 @@ object Notifier {
         if (ev.kind == "permission") {
             b.addAction(0, "Allow", action(ctx, ActionReceiver.ANSWER, ev.sid, "yes", dh = ev.dh))
             b.addAction(0, "Deny", action(ctx, ActionReceiver.ANSWER, ev.sid, "no", dh = ev.dh))
+            // Deny and say what to do instead, the way "No, and tell Claude…" works at the laptop.
+            val input = RemoteInput.Builder(KEY_REPLY).setLabel("What should Claude do instead?").build()
+            b.addAction(
+                NotificationCompat.Action.Builder(0, "Tell Claude…", action(ctx, ActionReceiver.DENY_WITH, ev.sid, mutable = true, dh = ev.dh))
+                    .addRemoteInput(input)
+                    .setAllowGeneratedReplies(false)
+                    .build()
+            )
         }
         if (ev.kind == "question") {
             // Android shows at most three action buttons; the rest stay in the chat.

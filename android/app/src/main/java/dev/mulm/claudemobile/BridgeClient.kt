@@ -1,5 +1,7 @@
 package dev.mulm.claudemobile
 
+import android.content.Context
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -11,8 +13,13 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -31,7 +38,7 @@ enum class Conn { NotConfigured, Connecting, Connected, Unauthorized, Offline }
  * State is exposed as flows; actions are plain HTTP calls so they also work from
  * notification actions while the socket is reconnecting.
  */
-class BridgeClient(private val prefs: Prefs) {
+class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -48,6 +55,9 @@ class BridgeClient(private val prefs: Prefs) {
     val conn: StateFlow<Conn> = _conn
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+    /** The last attempt failed because Tailscale isn't working on this phone (the UI offers to open it). */
+    private val _tailscaleDown = MutableStateFlow(false)
+    val tailscaleDown: StateFlow<Boolean> = _tailscaleDown
     private val _host = MutableStateFlow("")
     val host: StateFlow<String> = _host
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
@@ -85,6 +95,21 @@ class BridgeClient(private val prefs: Prefs) {
      * was dropped as stale, and the app sat on "Connecting…" with no socket at all.
      */
     private val connLock = Any()
+    /** elapsedRealtime of the last message from the bridge, for [probe]. */
+    @Volatile private var lastHeard = 0L
+    /**
+     * Keeps the CPU up through the first quick retries after a drop. In deep sleep a coroutine
+     * delay doesn't run until something else wakes the phone, which can be many minutes later.
+     * Longer waits use an alarm instead (Watchdog.retryIn).
+     */
+    private val wake by lazy {
+        ctx.getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "claudemobile:reconnect")
+            .apply { setReferenceCounted(false) }
+    }
+
+    /** The background service wants a connection (false before it starts and after it stops). */
+    val running get() = wanted
 
     fun start() {
         wanted = true
@@ -101,7 +126,9 @@ class BridgeClient(private val prefs: Prefs) {
             ws = null
             connectingSince = 0
             _conn.value = if (prefs.configured) Conn.Offline else Conn.NotConfigured
+            if (wake.isHeld) wake.release()
         }
+        Watchdog.cancelRetry(ctx)
         old?.close(1000, null)
     }
 
@@ -120,13 +147,49 @@ class BridgeClient(private val prefs: Prefs) {
         if (wanted) connect()
     }
 
-    /** App brought to the front, or the watchdog fired: reconnect unless a socket is up or still handshaking. */
+    /**
+     * App brought to the front, or the watchdog fired: try now unless a socket is up or still
+     * handshaking. Keeps the backoff, so a laptop that's off isn't hammered every time.
+     */
     fun ensureConnected() {
         if (!wanted) return
-        val stale = synchronized(connLock) {
-            ws == null || (connectingSince != 0L && SystemClock.elapsedRealtime() - connectingSince > HANDSHAKE_MS)
+        val stuck = synchronized(connLock) {
+            connectingSince != 0L && SystemClock.elapsedRealtime() - connectingSince > HANDSHAKE_MS
         }
-        if (stale) reconnectNow()
+        if (stuck) reconnectNow() else retryNow()
+    }
+
+    /** The retry alarm fired (or the app came to the front): attempt now if nothing is connected. */
+    fun retryNow() {
+        synchronized(connLock) {
+            if (ws != null) return
+            retryJob?.cancel()
+        }
+        connect()
+    }
+
+    /** Waits until an attempt in progress has succeeded or failed, so a receiver knows how long to hold the CPU. */
+    suspend fun awaitSettled(timeoutMs: Long) {
+        withTimeoutOrNull(timeoutMs) { _conn.first { it != Conn.Connecting } }
+    }
+
+    /**
+     * Watchdog check: a socket that looks open may be dead (the phone slept through the
+     * drop, so OkHttp's own pings never ran). Ask the bridge for a pong; reconnect if none comes.
+     */
+    suspend fun probe() {
+        val socket = ws ?: return
+        if (_conn.value != Conn.Connected) return
+        val before = lastHeard
+        socket.send(JSONObject().put("t", "ping").toString())
+        val answered = withTimeoutOrNull(PROBE_MS) {
+            while (lastHeard == before) delay(200)
+            true
+        } ?: false
+        if (!answered && socket === ws) {
+            Log.w(TAG, "no answer to a ping in ${PROBE_MS / 1000}s, reconnecting")
+            reconnectNow()
+        }
     }
 
     private fun connect() {
@@ -179,12 +242,22 @@ class BridgeClient(private val prefs: Prefs) {
     private fun scheduleRetry(unauthorized: Boolean) {
         synchronized(connLock) {
             if (!wanted) return
-            val secs = if (unauthorized) 60L else minOf(30L, 1L shl minOf(attempt, 5))
+            // 1, 2, 4, 8, 16, then every 30 s; after ~3 minutes of failures with the screen
+            // off (laptop asleep or away), every 5 minutes. Opening the app tries at once.
+            val interactive = ctx.getSystemService(PowerManager::class.java).isInteractive
+            val cap = if (attempt >= 8 && !interactive) 300L else 30L
+            val secs = if (unauthorized) 60L else minOf(cap, 1L shl minOf(attempt, 9))
             attempt++
             retryJob?.cancel()
             retryJob = scope.launch {
                 delay(secs * 1000)
                 connect()
+            }
+            if (secs <= QUICK_RETRY_S) {
+                wake.acquire((secs + 25) * 1000)
+            } else {
+                if (wake.isHeld) wake.release()
+                Watchdog.retryIn(ctx, secs * 1000)
             }
         }
     }
@@ -196,9 +269,13 @@ class BridgeClient(private val prefs: Prefs) {
                 attempt = 0
                 connectingSince = 0
                 deadlineJob?.cancel()
+                lastHeard = SystemClock.elapsedRealtime()
                 _conn.value = Conn.Connected
                 _error.value = null
+                _tailscaleDown.value = false
+                if (wake.isHeld) wake.release()
             }
+            Watchdog.cancelRetry(ctx)
             Log.i(TAG, "connected")
             webSocket.send(JSONObject().put("t", "hello").put("last_notify", prefs.lastNotifyId).toString())
             sub?.let { webSocket.send(JSONObject().put("t", "sub").put("sid", it).toString()) }
@@ -207,6 +284,7 @@ class BridgeClient(private val prefs: Prefs) {
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (webSocket !== ws) return
+            lastHeard = SystemClock.elapsedRealtime()
             val o = try { JSONObject(text) } catch (e: Exception) { return }
             when (o.optString("t")) {
                 "hello" -> {
@@ -249,16 +327,36 @@ class BridgeClient(private val prefs: Prefs) {
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val unauthorized = response?.code == 401
-            val msg = if (unauthorized) "The token was rejected" else (t.message ?: t.javaClass.simpleName)
+            val (msg, tailscale) = if (unauthorized) "The token was rejected" to false
+                else describe(t, webSocket.request().url.host)
             if (!lost(webSocket, if (unauthorized) Conn.Unauthorized else Conn.Offline, msg)) return
-            Log.i(TAG, "connection failed: $msg")
+            _tailscaleDown.value = tailscale
+            Log.i(TAG, "connection failed: ${t.javaClass.simpleName}: ${t.message}")
             scheduleRetry(unauthorized)
         }
+    }
+
+    /** A failure in words, and whether it means Tailscale isn't working on this phone. */
+    private fun describe(t: Throwable, host: String): Pair<String, Boolean> = when {
+        t.message == TailnetGuard.MESSAGE -> TailnetGuard.MESSAGE to true
+        // MagicDNS knows every tailnet machine, asleep or not: a failed lookup means the
+        // phone's Tailscale isn't answering (or, with "Block connections without VPN", is down).
+        t is UnknownHostException && TailnetGuard.isTailnet(host) -> "Tailscale isn't connected on this phone" to true
+        t is UnknownHostException -> "Can't find $host" to false
+        t is SocketTimeoutException -> "The laptop isn't answering. Is it awake?" to false
+        t is ConnectException -> "The laptop refused the connection. Is the bridge running?" to false
+        // Tailscale on the laptop takes the connection, but nothing is behind it (bridge restarting or stopped).
+        t is java.io.EOFException || t.message.orEmpty().startsWith("unexpected end of stream") ->
+            "The bridge on the laptop isn't answering" to false
+        else -> (t.message ?: t.javaClass.simpleName) to false
     }
 
     private companion object {
         const val TAG = "Bridge"
         const val HANDSHAKE_MS = 45_000L
+        const val PROBE_MS = 10_000L
+        /** Retries this soon keep the CPU awake; later ones wait for an alarm. */
+        const val QUICK_RETRY_S = 10L
     }
 
     private fun mergeItems(o: JSONObject) {
@@ -319,8 +417,12 @@ class BridgeClient(private val prefs: Prefs) {
     suspend fun select(sid: String, index: Int) = call("/api/sessions/$sid/select", JSONObject().put("index", index))
 
     /** [dh] ties the answer to the prompt the notification showed; the bridge refuses if another is up. */
-    suspend fun answer(sid: String, choice: String, dh: String? = null) =
-        call("/api/sessions/$sid/answer", JSONObject().put("choice", choice).apply { if (!dh.isNullOrBlank()) put("dh", dh) })
+    suspend fun answer(sid: String, choice: String, dh: String? = null, message: String? = null) =
+        call("/api/sessions/$sid/answer", JSONObject().put("choice", choice).apply {
+            if (!dh.isNullOrBlank()) put("dh", dh)
+            // With "no": what Claude should do instead, typed in once the prompt closes.
+            if (!message.isNullOrBlank()) put("message", message)
+        })
 
     /** Picks a question's option by label; with [qid] the bridge refuses once that question is no longer waiting. */
     suspend fun choose(sid: String, label: String, qid: String?) =

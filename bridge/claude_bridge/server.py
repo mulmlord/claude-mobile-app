@@ -50,6 +50,8 @@ KEYS = {
 ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 RENAME_MAX = 80
 FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
+WS_HEARTBEAT = 120  # seconds between pings to a quiet phone; it gets half that to answer
+MESSAGE_WAIT = 5.0  # seconds a "deny and tell Claude" waits for the prompt to close
 
 
 def load_config() -> dict:
@@ -790,10 +792,15 @@ class Bridge:
         return web.json_response({"ok": True, "picked": picked})
 
     async def api_answer(self, request):
-        """Answer a permission dialog by meaning: choice = yes | always | no."""
+        """Answer a permission dialog by meaning: choice = yes | always | no. With choice no,
+        an optional message is what Claude should do instead; it is typed in as the next turn
+        once the prompt has closed."""
         s = self.get_session(request)
         body = await json_body(request)
         choice = body.get("choice", "yes")
+        message = str(body.get("message") or "").strip()
+        if message and choice != "no":
+            raise web.HTTPBadRequest(text="a message only goes with choice 'no'")
         opts = s.screen.dialog_options()
         if not opts:
             raise web.HTTPConflict(text="no dialog visible in this session")
@@ -816,7 +823,17 @@ class Bridge:
         if pick is None:
             raise web.HTTPConflict(text=f"option {choice!r} not offered")
         opt = await self.select_option(s, pick)
-        return web.json_response({"ok": True, "picked": opt})
+        if not message:
+            return web.json_response({"ok": True, "picked": opt})
+        # Only type once the prompt is gone: text typed into it would be lost, and the
+        # Enter after it would pick whatever option is highlighted.
+        deadline = time.monotonic() + MESSAGE_WAIT
+        while s.screen.dialog_options() and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        if s.screen.dialog_options():
+            raise web.HTTPConflict(text="Denied, but the prompt didn't close, so your message wasn't sent.")
+        await self.send_text(s, message)
+        return web.json_response({"ok": True, "picked": opt, "sent": True})
 
     async def api_screen(self, request):
         return web.json_response(self.screen_msg(self.get_session(request)))
@@ -1016,7 +1033,10 @@ class Bridge:
         return web.json_response({"ok": True, "path": path})
 
     async def api_ws(self, request):
-        ws = web.WebSocketResponse(heartbeat=25)
+        # Ping a quiet phone every 2 minutes and give it a minute to answer: a phone in deep
+        # sleep answers late, and with 25 s (12.5 s to answer) the bridge kept dropping it,
+        # after which the phone could take many minutes to reconnect.
+        ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT)
         await ws.prepare(request)
         c = Client(ws)
         self.clients.add(c)
