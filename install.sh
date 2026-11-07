@@ -17,8 +17,11 @@ chmod +x bin/claude-mobile-wrap bin/claude-mobile-hook
 ln -sf "$ROOT/bin/claude-mobile-wrap" "$BIN/claude-mobile-wrap"
 ln -sf "$ROOT/bin/claude-mobile-hook" "$BIN/claude-mobile-hook"
 
-echo "==> Bridge dependencies"
-(cd bridge && uv sync --quiet)
+# The service gets its own environment without the test tools (pytest);
+# bridge/.venv stays the development one that `uv run pytest` uses.
+VENV=$HOME/.local/share/claude-mobile/venv
+echo "==> Bridge dependencies ($VENV)"
+(cd bridge && UV_PROJECT_ENVIRONMENT="$VENV" uv sync --no-dev --quiet)
 
 echo "==> Claude Code hooks ($SETTINGS)"
 cp "$SETTINGS" "$SETTINGS.bak-claude-mobile-$STAMP"
@@ -102,7 +105,7 @@ cat > "$HOME/.config/systemd/user/claude-mobile-bridge.service" <<EOF
 Description=Claude Mobile bridge (phone <-> Claude Code sessions)
 
 [Service]
-ExecStart=$ROOT/bridge/.venv/bin/python -m claude_bridge
+ExecStart=$VENV/bin/python -m claude_bridge
 WorkingDirectory=$ROOT/bridge
 Restart=always
 RestartSec=2

@@ -7,6 +7,7 @@ SETTINGS=$HOME/.claude/settings.json
 systemctl --user disable --now claude-mobile-bridge.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/claude-mobile-bridge.service"
 systemctl --user daemon-reload
+rm -rf "$HOME/.local/share/claude-mobile/venv"
 
 python3 - "$SETTINGS" "$BIN/claude-mobile-hook" <<'EOF'
 import json, sys

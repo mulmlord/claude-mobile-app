@@ -10,6 +10,7 @@ sealed interface Route {
     data class Chat(val sid: String) : Route
     data class Settings(val url: String? = null, val token: String? = null) : Route
     data object NewSession : Route
+    data object ConnLog : Route
     data object GitHub : Route
     data class Repo(val repo: String, val tab: String = "prs") : Route
     data class Pr(val repo: String, val number: Int) : Route
@@ -28,6 +29,7 @@ object Nav {
             is Route.Pr -> Route.Repo(r.repo, "prs")
             is Route.Issue -> Route.Repo(r.repo, "issues")
             is Route.Repo -> Route.GitHub
+            Route.ConnLog -> Route.Settings()
             else -> Route.Sessions
         }
     }
@@ -42,6 +44,7 @@ fun AppRoot() {
         is Route.Chat -> ChatScreen(r.sid)
         is Route.Settings -> SettingsScreen(r)
         Route.NewSession -> NewSessionScreen()
+        Route.ConnLog -> ConnLogScreen()
         Route.GitHub -> GitHubScreen()
         is Route.Repo -> RepoScreen(r.repo, r.tab)
         is Route.Pr -> PrScreen(r.repo, r.number)

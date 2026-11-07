@@ -152,6 +152,17 @@ fun SettingsScreen(route: Route.Settings) {
                     }) { Text("Test") }
                 }
                 testResult?.let { Text(it, fontSize = 14.sp, color = c.muted) }
+                HorizontalDivider(color = c.border)
+                Row(
+                    Modifier.fillMaxWidth().clickable { Nav.go(Route.ConnLog) }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Connection log", fontSize = 15.sp, color = c.text)
+                        Text("When the phone connected, dropped, or couldn't connect, and why", fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                    }
+                    Text("›", fontSize = 20.sp, color = c.faint)
+                }
             }
 
             Section("Notifications") {

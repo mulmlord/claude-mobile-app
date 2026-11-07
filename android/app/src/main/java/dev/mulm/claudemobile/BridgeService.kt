@@ -39,6 +39,7 @@ class BridgeService : Service() {
         ServiceCompat.startForeground(this, Notifier.SERVICE_ID, Notifier.serviceNotification(this, "Connecting…"), type)
 
         val bridge = app.bridge
+        ConnLog.info("Background connection started")
         bridge.start()
 
         scope.launch {
@@ -97,7 +98,11 @@ class BridgeService : Service() {
             private var last: Network? = null
             override fun onAvailable(network: Network) {
                 // A socket opened on the old network may hang until the next ping; start fresh.
-                if ((last != null && network != last) || bridge.conn.value != Conn.Connected) bridge.reconnectNow()
+                val changed = last != null && network != last
+                if (changed || bridge.conn.value != Conn.Connected) {
+                    if (changed) ConnLog.info("Network changed, reconnecting")
+                    bridge.reconnectNow()
+                }
                 last = network
             }
         }.also { cm.registerDefaultNetworkCallback(it) }
@@ -115,6 +120,7 @@ class BridgeService : Service() {
     }
 
     override fun onDestroy() {
+        ConnLog.info("Background connection stopped")
         netCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         app.bridge.stop()
         scope.cancel()

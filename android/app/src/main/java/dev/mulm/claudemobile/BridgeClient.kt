@@ -95,6 +95,8 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
      * was dropped as stale, and the app sat on "Connecting…" with no socket at all.
      */
     private val connLock = Any()
+    /** Wall-clock time the connection went down (for "offline for …" in the log); 0 while up. */
+    private var offlineSince = 0L
     /** elapsedRealtime of the last message from the bridge, for [probe]. */
     @Volatile private var lastHeard = 0L
     /**
@@ -188,6 +190,7 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         } ?: false
         if (!answered && socket === ws) {
             Log.w(TAG, "no answer to a ping in ${PROBE_MS / 1000}s, reconnecting")
+            ConnLog.bad("No answer to a ping, the connection had died. Reconnecting")
             reconnectNow()
         }
     }
@@ -217,8 +220,9 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
             deadlineJob?.cancel()
             deadlineJob = scope.launch {
                 delay(HANDSHAKE_MS)
-                if (lost(socket, Conn.Offline, "No answer from the laptop")) {
+                if (lost(socket, Conn.Offline, "No answer from the laptop") != Drop.Stale) {
                     Log.w(TAG, "handshake took over ${HANDSHAKE_MS / 1000}s, retrying")
+                    ConnLog.bad("Couldn't connect: no answer within ${HANDSHAKE_MS / 1000} s")
                     socket.cancel()
                     scheduleRetry(false)
                 }
@@ -226,16 +230,20 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         }
     }
 
-    /** Forgets [socket] if it is still the current one; false for a stale socket's late callback. */
-    private fun lost(socket: WebSocket, state: Conn, error: String?): Boolean {
+    private enum class Drop { Stale, WasUp, WasDown }
+
+    /** Forgets [socket] if it is still the current one; [Drop.Stale] for an old socket's late callback. */
+    private fun lost(socket: WebSocket, state: Conn, error: String?): Drop {
         synchronized(connLock) {
-            if (socket !== ws) return false
+            if (socket !== ws) return Drop.Stale
+            val wasUp = _conn.value == Conn.Connected
             ws = null
             connectingSince = 0
             deadlineJob?.cancel()
             _conn.value = state
             if (error != null) _error.value = error
-            return true
+            if (offlineSince == 0L) offlineSince = System.currentTimeMillis()
+            return if (wasUp) Drop.WasUp else Drop.WasDown
         }
     }
 
@@ -277,6 +285,10 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
             }
             Watchdog.cancelRetry(ctx)
             Log.i(TAG, "connected")
+            val down = offlineSince
+            offlineSince = 0
+            ConnLog.good("Connected to ${webSocket.request().url.host.substringBefore('.')}" +
+                if (down > 0) " · offline for ${ConnLog.duration(System.currentTimeMillis() - down)}" else "")
             webSocket.send(JSONObject().put("t", "hello").put("last_notify", prefs.lastNotifyId).toString())
             sub?.let { webSocket.send(JSONObject().put("t", "sub").put("sid", it).toString()) }
             screenSub?.let { webSocket.send(JSONObject().put("t", "screen").put("sid", it).toString()) }
@@ -320,8 +332,10 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (!lost(webSocket, Conn.Offline, null)) return
+            val drop = lost(webSocket, Conn.Offline, null)
+            if (drop == Drop.Stale) return
             Log.i(TAG, "closed by the laptop ($code)")
+            ConnLog.bad(if (drop == Drop.WasUp) "The laptop closed the connection" else "Couldn't connect: the laptop closed the connection")
             scheduleRetry(false)
         }
 
@@ -329,9 +343,11 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
             val unauthorized = response?.code == 401
             val (msg, tailscale) = if (unauthorized) "The token was rejected" to false
                 else describe(t, webSocket.request().url.host)
-            if (!lost(webSocket, if (unauthorized) Conn.Unauthorized else Conn.Offline, msg)) return
+            val drop = lost(webSocket, if (unauthorized) Conn.Unauthorized else Conn.Offline, msg)
+            if (drop == Drop.Stale) return
             _tailscaleDown.value = tailscale
             Log.i(TAG, "connection failed: ${t.javaClass.simpleName}: ${t.message}")
+            ConnLog.bad(if (drop == Drop.WasUp) "Connection lost: $msg" else "Couldn't connect: $msg")
             scheduleRetry(unauthorized)
         }
     }

@@ -74,7 +74,9 @@ with push notifications when a session finishes, needs permission, or asks a que
   bridge gives a sleeping phone a minute to answer its pings. After ~3 minutes of failures
   with the screen off it retries every 5 minutes; opening the app tries at once. When the
   phone's Tailscale is the problem, the app and the status notification say so and offer
-  **Open Tailscale**. Permission notifications have Allow/Deny/**Tell Claude…** (deny and type
+  **Open Tailscale**. Settings → **Connection log** lists when the phone connected, dropped
+  or couldn't connect and why (kept on the phone, survives the app being killed; Copy puts it
+  on the clipboard). Permission notifications have Allow/Deny/**Tell Claude…** (deny and type
   what to do instead) and say what's waiting
   ("Edit · app/src/x.kt (+3 −1)"); expanded, they show a compact red/green diff of the
   edit or the Bash command, so you can decide from the shade. Questions (AskUserQuestion
@@ -169,6 +171,9 @@ Config (`~/.config/claude-mobile/config.json`): `keep_awake` (`working`|`always`
 ```bash
 cd bridge && uv run pytest     # the bridge's suite: offline, a few seconds
 ```
+
+The service runs from its own environment (`~/.local/share/claude-mobile/venv`, made by
+`install.sh` without the test tools); `bridge/.venv` is the development one these use.
 
 `bridge/tests/` runs against temp dirs only: HOME and the XDG dirs point into a sandbox,
 `gh`, `git`, terminals and `systemd-inhibit` are faked, and the wrapper protocol is driven
