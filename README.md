@@ -58,6 +58,15 @@ with push notifications when a session finishes, needs permission, or asks a que
   over debug builds; not debuggable, so `run-as`/jdb need a debug build). When its versionCode is higher, the app shows "Update ready";
   Settings → App downloads it over Tailscale, checks the sha256 and hands it to Android's
   installer. Android asks once to allow installs from Claude Mobile.
+* **Questions** (AskUserQuestion) show as a form in the chat: every question, its options
+  (one, or any with multiple choice), and a field for your own answer; Submit enters it all
+  on the laptop's question screen key by key (an option's number; for typed text "Type
+  something.", or with multiple choice: tick, arrow onto it, type, Tab, Enter; then the review
+  screen's Submit), checking after each step that the screen moved on. Claude Code writes a
+  question to the transcript only once it's answered, so the questions come from a
+  PreToolUse hook (matcher AskUserQuestion, set up by install.sh; PostToolUse clears it).
+  The ⋮ menu also has **Switch mode** (Shift+Tab, then shows the mode the status area reports)
+  and **Compact** (`/compact`).
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
   live terminal, in the laptop's colours (the bridge
@@ -169,7 +178,7 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?, "message"?}` (with `no`: typed in as the next turn once the prompt closes),
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
-`GET …/items/{iid}/image` (an image Claude read), `POST …/redraw` (have Claude Code repaint its screen), `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
+`POST …/answers {"qid", "answers": [{"options": [labels], "text"}]}` (a whole AskUserQuestion), `GET …/items/{iid}/image` (an image Claude read), `POST …/redraw` (have Claude Code repaint its screen), `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
 or a dialog is open),
 WebSocket `/api/ws` (`notify` events: `id, sid, kind, title, body`, plus `tool` {`name, summary,
 detail` or `diff, add, del`} on permission and `qid, options` on questions),

@@ -12,6 +12,9 @@ private inline fun <T> JSONArray?.mapObjects(f: (JSONObject) -> T): List<T> {
 
 data class QOption(val label: String, val description: String)
 
+/** One answer of the question form: options picked (one, or any with multiple choice) and/or your own text. */
+data class QAnswer(val options: List<String>, val text: String)
+
 data class Question(val question: String, val header: String, val multiSelect: Boolean, val options: List<QOption>) {
     companion object {
         fun list(a: JSONArray?): List<Question> = a.mapObjects { o ->
@@ -34,6 +37,8 @@ data class SessionInfo(
     val lastText: String,
     val connected: Boolean,
     val questions: List<Question>,
+    /** The waiting AskUserQuestion's tool call id (what the question form answers). */
+    val questionId: String = "",
     /** Tokens in the last request, and the model's context window. */
     val context: Long = 0,
     val contextMax: Long = 200_000,
@@ -50,6 +55,7 @@ data class SessionInfo(
             started = o.optDouble("started", 0.0), lastText = o.s("last_text"),
             connected = o.optBoolean("connected", true),
             questions = Question.list(o.optJSONArray("questions")),
+            questionId = if (o.isNull("question_id")) "" else o.optString("question_id"),
             context = o.optLong("context"), contextMax = o.optLong("context_max", 200_000).coerceAtLeast(1),
             repo = if (o.isNull("repo")) null else o.optString("repo").ifBlank { null },
         )

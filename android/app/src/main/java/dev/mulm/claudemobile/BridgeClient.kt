@@ -534,6 +534,12 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         }
     }
 
+    /** Answers a whole AskUserQuestion (tool call [qid]); the bridge enters it on the laptop. */
+    suspend fun answers(sid: String, qid: String, answers: List<QAnswer>) =
+        call("/api/sessions/$sid/answers", JSONObject().put("qid", qid).put("answers", JSONArray(answers.map {
+            JSONObject().put("options", JSONArray(it.options)).put("text", it.text)
+        })))
+
     /** Has Claude Code repaint its screen, for a terminal view that misses parts drawn earlier. */
     suspend fun redraw(sid: String) = call("/api/sessions/$sid/redraw", JSONObject())
 
@@ -595,6 +601,9 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         _keepAwake.value = o.optString("keep_awake", mode)
         _awake.value = o.optBoolean("awake")
     }
+
+    /** The session's screen right now (without subscribing to its updates). */
+    suspend fun screenNow(sid: String): ScreenState = ScreenState.from(call("/api/sessions/$sid/screen"))
 
     suspend fun refreshItems(sid: String) {
         val o = call("/api/sessions/$sid/items")

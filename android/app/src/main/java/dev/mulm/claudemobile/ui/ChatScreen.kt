@@ -238,6 +238,23 @@ fun ChatScreen(sid: String) {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = c.muted) }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
                             MenuEntry("Search") { menu = false; searching = true }
+                            val live = session?.connected == true
+                            // Shift+Tab cycles Claude Code's mode; the laptop's status area says which one is on.
+                            MenuEntry("Switch mode", enabled = live) {
+                                menu = false
+                                act {
+                                    bridge.keys(sid, "shift-tab")
+                                    delay(700)
+                                    snackbar.showSnackbar("Mode: " + modeOf(bridge.screenNow(sid)))
+                                }
+                            }
+                            MenuEntry("Compact (/compact)", enabled = live) {
+                                menu = false
+                                act {
+                                    bridge.sendText(sid, "/compact")
+                                    snackbar.showSnackbar("Compacting the conversation…")
+                                }
+                            }
                             session?.repo?.let { repo -> MenuEntry("GitHub") { menu = false; Nav.go(Route.Repo(repo)) } }
                             MenuEntry("Rename…", enabled = session?.connected == true) { menu = false; renaming = true }
                             MenuEntry("End session…", enabled = session != null) { menu = false; ending = true }
@@ -257,7 +274,17 @@ fun ChatScreen(sid: String) {
                 AnimatedVisibility(visible = showTerminal) {
                     TerminalPanel(sc, onRedraw = { act { bridge.redraw(sid) } })
                 }
-                if (needsYou || (sc != null && sc.options.isNotEmpty())) {
+                // A question Claude asked (AskUserQuestion): the whole thing as a form.
+                val asked = session?.takeIf {
+                    it.status == "question" && it.connected && it.questionId.isNotBlank() && it.questions.isNotEmpty()
+                }
+                if (asked != null) {
+                    QuestionForm(
+                        asked.questionId, asked.questions,
+                        onSubmit = { answers, done -> act { try { bridge.answers(sid, asked.questionId, answers) } finally { done() } } },
+                        onTerminal = { showTerminal = true },
+                    )
+                } else if (needsYou || (sc != null && sc.options.isNotEmpty())) {
                     MenuPanel(session, sc,
                         onSelect = { i -> act { bridge.select(sid, i) } },
                         onEsc = { act { bridge.keys(sid, "esc") } })
@@ -437,6 +464,16 @@ private suspend fun LazyListState.reveal(index: Int) {
     val room = info.viewportSize.height - info.beforeContentPadding - info.afterContentPadding
     val target = if (item.size <= room) (room - item.size) / 2 else room - item.size
     animateScrollBy((item.offset - target).toFloat())
+}
+
+/**
+ * The mode line of Claude Code's status area, as it says it ("⏵⏵ auto mode on (shift+tab to
+ * cycle)" → "auto mode on", "⏸ manual mode on" → "manual mode on"); "default" when there's none.
+ */
+internal fun modeOf(sc: ScreenState): String {
+    val line = sc.lines.lastOrNull { l -> l.trim().let { (it.startsWith("⏵") || it.startsWith("⏸") || it.startsWith("⏴")) && " on" in it } }
+        ?: sc.lines.lastOrNull { "shift+tab to cycle" in it }
+    return line?.substringBefore("(shift+tab")?.trim()?.trimStart('⏵', '⏸', '⏴', ' ')?.trim()?.ifBlank { null } ?: "default"
 }
 
 private fun statusText(s: SessionInfo) = when {

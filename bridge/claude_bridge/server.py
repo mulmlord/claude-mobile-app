@@ -57,6 +57,7 @@ ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 RENAME_MAX = 80
 FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
 WS_HEARTBEAT = 120  # seconds between pings to a quiet phone; it gets half that to answer
+ANSWER_STEP_WAIT = 3.0  # seconds the question screen gets to move on after each answer
 IMAGE_MAX = 20 * 1024 * 1024  # largest image the phone is sent from a Read
 REDRAW_AFTER = 5.0  # a wrapper connecting this long after its claude started gets a repaint
 REDRAW_PAUSE = 0.5  # seconds the terminal is a row shorter while forcing that repaint
@@ -231,6 +232,9 @@ class Session:
         self.last_remote_input = 0.0
         self.exited = False
         self.cc_status: str | None = None
+        # AskUserQuestion waiting for an answer, from the PreToolUse hook: {"id", "questions"}.
+        # Claude Code writes the question to the transcript only once it's answered.
+        self.asked: dict | None = None
 
     @property
     def project(self) -> str:
@@ -258,17 +262,19 @@ class Session:
         return ""
 
     def summary(self) -> dict:
-        q = None
-        if self.transcript and self.transcript.pending_question:
+        q, qid = None, None
+        if self.asked:
+            q, qid = self.asked["questions"], self.asked["id"]
+        elif self.transcript and self.transcript.pending_question:
             iid = self.transcript.tool_items.get(self.transcript.pending_question)
             if iid in self.transcript.items:
-                q = self.transcript.items[iid].get("questions")
+                q, qid = self.transcript.items[iid].get("questions"), self.transcript.pending_question
         return {
             "id": self.id, "title": self.title, "project": self.project, "cwd": self.cwd,
             "status": self.status, "detail": self.detail, "status_since": self.status_since,
             "updated": self.updated, "started": self.started, "last_text": self.last_text(),
             "session_id": self.claude_session_id, "connected": self.writer is not None,
-            "questions": q,
+            "questions": q, "question_id": qid,
             "context": self.transcript.context_tokens if self.transcript else 0,
             "context_max": context_window(self.transcript),
             "model": self.transcript.model if self.transcript else None,
@@ -532,8 +538,19 @@ class Bridge:
         if event == "SessionStart":
             changed = s.set_status("idle")
         elif event == "UserPromptSubmit":
+            s.asked = None
             changed = s.set_status("working")
+        elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
+            qs = transcript_mod.question_list((data.get("tool_input") or {}).get("questions"))
+            if qs:
+                s.asked = {"id": str(data.get("tool_use_id") or ""), "questions": qs}
+                changed = self.question_asked(s, s.asked["id"], qs)
+        elif event == "PostToolUse" and data.get("tool_name") == "AskUserQuestion":
+            if s.asked:
+                s.asked = None
+                changed = s.set_status("working")
         elif event == "Stop":
+            s.asked = None
             changed = s.set_status("idle")
             asyncio.get_running_loop().create_task(self.notify_done(s))
         elif event == "Notification":
@@ -645,6 +662,8 @@ class Bridge:
         """The dialog up is AskUserQuestion's. Claude Code announces it with the same
         "permission_prompt" hook as tool permissions, but the question notification
         (with its options) is the one to keep; Allow/Deny can't answer it."""
+        if s.status == "question" and s.asked:
+            return True
         t, it = s.transcript, self.pending_tool(s)
         return bool(s.status == "question" and t and t.pending_question and it
                     and t.tool_items.get(t.pending_question) == it["id"])
@@ -662,23 +681,30 @@ class Bridge:
             return
         s.updated = time.time()
         self.dirty = True
-        if s.status in ("permission", "question") and not t.pending_question:
+        if s.asked and (iid := t.tool_items.get(s.asked["id"])) and t.items.get(iid, {}).get("status") != "running":
+            s.asked = None  # answered: the transcript now has the question and its result
+        if s.status in ("permission", "question") and not t.pending_question and not s.asked:
             if any(i["kind"] != "user" for i in items) and time.time() - s.status_since > 1.0:
                 s.set_status("working")
         if t.pending_question and s.status != "question":
             iid = t.tool_items.get(t.pending_question)
-            qs = t.items.get(iid, {}).get("questions") or []
-            q = qs[0]["question"] if qs else "Claude has a question"
-            s.set_status("question", q)
-            opts = " · ".join(o["label"] for o in (qs[0]["options"] if qs else []))
-            extra = {"qid": t.pending_question}
-            # One tap answers only a lone single-choice question; with several questions
-            # or multi-select the dialog needs more than that, so the phone opens the chat.
-            if len(qs) == 1 and not qs[0]["multiSelect"]:
-                extra["options"] = [o["label"] for o in qs[0]["options"] if o["label"]]
-            self.notify(s, "question", s.title, q + (f"\n{opts}" if opts else ""), dedupe=f"q:{t.pending_question}",
-                        extra=extra)
+            self.question_asked(s, t.pending_question, t.items.get(iid, {}).get("questions") or [])
         await self.push_items(s, items=items, reset=reset)
+
+    def question_asked(self, s: Session, qid: str, qs: list) -> bool:
+        """Claude asked (AskUserQuestion): status and the notification, once per question."""
+        q = qs[0]["question"] if qs else "Claude has a question"
+        if s.status == "question" and s.detail == q:
+            return False
+        s.set_status("question", q)
+        opts = " · ".join(o["label"] for o in (qs[0]["options"] if qs else []))
+        extra = {"qid": qid}
+        # One tap answers only a lone single-choice question; with several questions or
+        # multiple choice the phone opens the chat, where the whole form is.
+        if len(qs) == 1 and not qs[0]["multiSelect"]:
+            extra["options"] = [o["label"] for o in qs[0]["options"] if o["label"]]
+        self.notify(s, "question", s.title, q + (f"\n{opts}" if opts else ""), dedupe=f"q:{qid}", extra=extra)
+        return True
 
     async def push_items(self, s: Session, items: list | None = None, reset: bool = False):
         if not s.transcript:
@@ -855,7 +881,7 @@ class Bridge:
         if not label:
             raise web.HTTPBadRequest(text="label missing")
         qid = body.get("qid")
-        if qid and (not s.transcript or s.transcript.pending_question != qid):
+        if qid and qid != (s.asked or {}).get("id") and (not s.transcript or s.transcript.pending_question != qid):
             raise web.HTTPConflict(text="That question was already answered")
         opts = s.screen.dialog_options()
         if not opts:
@@ -865,6 +891,107 @@ class Bridge:
             raise web.HTTPConflict(text=f"“{label}” isn't an option on screen; open the chat to answer")
         picked = await self.select_option(s, opt["index"])
         return web.json_response({"ok": True, "picked": picked})
+
+    async def screen_shows(self, s: Session, cond, timeout: float = ANSWER_STEP_WAIT) -> bool:
+        """Waits (briefly) until the session's screen text satisfies [cond]."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if cond("\n".join(s.screen.lines())):
+                return True
+            if time.monotonic() > deadline:
+                return False
+            await asyncio.sleep(0.1)
+
+    async def api_answers(self, request):
+        """Answer a whole AskUserQuestion (several questions, multiple choice, typed answers)
+        from the phone's form, as you would at the laptop: an option's number picks it (and
+        moves on), toggles it with multiple choice (Tab moves on), "Type something." takes
+        text and Enter (with multiple choice: tick it, arrow onto it, type, Tab, Enter); the
+        review screen's "Submit answers" sends them. After each step the
+        screen has to show the next question before anything else is typed.
+        body: {"qid": the tool call's id (or "item": its chat item id), "answers": [{"options": [labels], "text": ""}, …]}"""
+        s = self.get_session(request)
+        body = await json_body(request)
+        t = s.transcript
+        qid, iid = str(body.get("qid") or ""), str(body.get("item") or "")
+        pending = t.tool_items.get(t.pending_question) if t and t.pending_question else None
+        if s.asked and qid and qid == s.asked["id"]:
+            qs = s.asked["questions"]
+        elif pending and (qid == t.pending_question or iid == pending):
+            qs = t.items.get(pending, {}).get("questions") or []
+        else:
+            raise web.HTTPConflict(text="That question was already answered")
+        answers = body.get("answers")
+        if not qs or not isinstance(answers, list) or len(answers) != len(qs):
+            raise web.HTTPBadRequest(text="one answer per question")
+        plan = []
+        for q, a in zip(qs, answers):
+            if not isinstance(a, dict):
+                raise web.HTTPBadRequest(text="one answer per question")
+            labels = [o["label"] for o in q["options"]]
+            picked = [str(x) for x in a.get("options") or []]
+            text = " ".join(str(a.get("text") or "").split())  # one line: Enter would end it
+            for p in picked:
+                if p not in labels:
+                    raise web.HTTPBadRequest(text=f"“{p}” isn't an option of “{q['question']}”")
+            if q["multiSelect"] and not (picked or text):
+                raise web.HTTPBadRequest(text=f"Nothing chosen for “{q['question']}”")
+            if not q["multiSelect"] and len(picked) + bool(text) != 1:
+                raise web.HTTPBadRequest(text=f"Pick one answer for “{q['question']}”")
+            plan.append((q, [labels.index(p) + 1 for p in picked], text, len(labels) + 1))
+
+        def fail(where: str):
+            return web.HTTPConflict(text=f"The question on the laptop didn't go on as expected ({where}). "
+                                         "Finish it in the terminal view.")
+
+        # Only a fresh dialog: its first question showing and nothing answered at the laptop yet.
+        if not await self.screen_shows(s, lambda txt: qs[0]["question"] in txt and "☒" not in txt):
+            raise fail("it isn't at the first question")
+        for n, (q, numbers, text, other) in enumerate(plan):
+            nxt = qs[n + 1]["question"] if n + 1 < len(qs) else None
+            for k in numbers:
+                await self.inject(s, str(k).encode())
+                await asyncio.sleep(0.15)
+            if text and not q["multiSelect"]:
+                # Its number moves onto "Type something." and opens the field; Enter takes it.
+                await self.inject(s, str(other).encode())
+                await asyncio.sleep(0.25)
+                await self.inject(s, text.encode())
+                await asyncio.sleep(0.25)
+                await self.inject(s, b"\r")
+            elif text:
+                # With multiple choice its number only ticks it: the cursor has to go there
+                # (from the first option) to type; then Tab is "Submit" under the options and
+                # Enter moves on.
+                await self.inject(s, str(other).encode())
+                await asyncio.sleep(0.15)
+                for _ in range(other - 1):
+                    await self.inject(s, self.key_bytes(s, "down"))
+                    await asyncio.sleep(0.06)
+                await asyncio.sleep(0.2)
+                await self.inject(s, text.encode())
+                await asyncio.sleep(0.25)
+                await self.inject(s, b"\t")
+                await asyncio.sleep(0.15)
+                await self.inject(s, b"\r")
+            elif q["multiSelect"]:
+                await self.inject(s, b"\t")
+            if nxt is not None:
+                if not await self.screen_shows(s, lambda txt: nxt in txt):
+                    raise fail(f"after “{q['question']}”")
+        # The review screen. Wait for it as such: while Claude Code redraws, the screen can
+        # show no menu at all for a moment, which isn't the dialog having closed.
+        if await self.screen_shows(s, lambda txt: "Submit answers" in txt):
+            opt = match_option(s.screen.dialog_options(), "Submit answers")
+            if not opt:
+                raise fail("no Submit on the review screen")
+            await self.select_option(s, opt["index"])
+            if not await self.screen_shows(s, lambda txt: "Submit answers" not in txt):
+                raise fail("the review screen stayed")
+        elif s.screen.dialog_options():
+            raise fail("no review screen")
+        s.last_remote_input = time.time()
+        return web.json_response({"ok": True})
 
     async def api_redraw(self, request):
         """The phone's terminal view looks incomplete: have Claude Code repaint (see redraw)."""
@@ -1206,6 +1333,7 @@ def make_app(bridge: Bridge) -> web.Application:
     app.router.add_post("/api/sessions/{sid}/end", bridge.api_end)
     app.router.add_post("/api/sessions/{sid}/rename", bridge.api_rename)
     app.router.add_post("/api/sessions/{sid}/redraw", bridge.api_redraw)
+    app.router.add_post("/api/sessions/{sid}/answers", bridge.api_answers)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
     bridge.github.routes(app)

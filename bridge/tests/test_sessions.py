@@ -803,3 +803,218 @@ async def test_an_image_claude_read_is_served(api, bridge, wrappers, conv, sandb
     img.unlink()
     r = await api.get(f"/api/sessions/w1/items/{shot['id']}/image")
     assert r.status == 404 and "anymore" in await r.text()
+
+
+# ---- answering a whole AskUserQuestion from the phone's form --------------------------------
+COLOR = {"question": "Which color?", "header": "Color", "multiSelect": False,
+         "options": [{"label": "Red"}, {"label": "Green"}, {"label": "Blue"}]}
+FRUIT = {"question": "Which fruits?", "header": "Fruit", "multiSelect": True,
+         "options": [{"label": "Apple"}, {"label": "Banana"}, {"label": "Cherry"}]}
+
+
+class FakeQuestionTUI:
+    """Claude Code's AskUserQuestion dialog as observed (v2.1): a digit picks an option and
+    moves on, or toggles it with multiple choice; "Type something." (the number after the
+    options) takes text until Enter; Tab moves on; the review screen's 1 submits."""
+
+    def __init__(self, s, qs):
+        self.s, self.qs, self.i = s, qs, 0
+        self.cursor = 1  # row of the ❯ within a question; len(options) + 2 is "Submit" (multiple choice)
+        self.picked = [set() for _ in qs]
+        self.text = [None] * len(qs)
+        self.typing = None
+        self.keys = []
+        self.submitted = False
+        self.render()
+
+    def render(self):
+        tabs = "  ".join(("☒" if self.picked[k] or self.text[k] else "☐") + " " + q["header"] for k, q in enumerate(self.qs))
+        lines = ["←  " + tabs + "  ✔ Submit  →", ""]
+        if self.submitted:
+            lines = ["● done", "", "──────────", "❯", "──────────"]
+        elif self.i < len(self.qs):
+            q = self.qs[self.i]
+            lines.append(q["question"])
+            other = len(q["options"]) + 1
+            for n, o in enumerate(q["options"], 1):
+                box = ("[✔] " if n in self.picked[self.i] else "[ ] ") if q["multiSelect"] else ""
+                lines.append(("❯ " if n == self.cursor else "  ") + f"{n}. {box}{o['label']}")
+            box = ("[✔] " if other in self.picked[self.i] else "[ ] ") if q["multiSelect"] else ""
+            label = self.typing or self.text[self.i] or "Type something."
+            lines.append(("❯ " if self.cursor == other else "  ") + f"{other}. {box}{label}")
+            if q["multiSelect"]:
+                lines.append(("❯ " if self.cursor == other + 1 else "  ") + "   Submit")
+        else:
+            lines += ["Review your answers", "Ready to submit your answers?", "❯ 1. Submit answers", "  2. Cancel"]
+        if self.blank:
+            lines = [""]
+        self.s.screen.reset()
+        self.s.screen.feed(screen_bytes(lines))
+
+    def next_question(self):
+        self.i += 1
+        self.cursor = 1
+        if self.i == len(self.qs) and self.blank_first:
+            self.blank = True  # mid-redraw: no menu on screen for a moment
+
+    blank_first = False
+    blank = False
+
+    def settle(self):
+        if self.blank:
+            self.blank = False
+            self.render()
+
+    async def key(self, s, data: bytes):
+        self.keys.append(data)
+        if self.i >= len(self.qs):
+            if data == b"1":
+                self.submitted = True
+            self.render()
+            return
+        q = self.qs[self.i]
+        other = len(q["options"]) + 1
+        on_field = self.cursor == other
+        if data in (b"\x1b[B", b"\x1bOB"):
+            self.cursor = min(self.cursor + 1, other + (1 if q["multiSelect"] else 0))
+            if self.cursor == other:
+                self.typing = self.text[self.i] or ""
+        elif self.typing is not None and on_field:
+            if data == b"\r" and not q["multiSelect"]:
+                self.text[self.i], self.typing = self.typing, None
+                self.next_question()
+            elif data == b"\t":  # multiple choice: down to "Submit"
+                self.text[self.i], self.typing = self.typing, None
+                self.cursor = other + 1
+            elif data.isdigit() and q["multiSelect"]:
+                self.typing += data.decode()
+            else:
+                self.typing += data.decode()
+        elif data == b"\t":
+            self.next_question()
+        elif data == b"\r":
+            if q["multiSelect"] and self.cursor == other + 1:
+                self.next_question()
+            elif q["multiSelect"]:
+                self.picked[self.i] ^= {self.cursor}
+        elif data.isdigit():
+            n = int(data)
+            if q["multiSelect"]:
+                self.picked[self.i] ^= {n}  # only ticks, also "Type something" (cursor stays)
+            elif n == other:
+                self.cursor, self.typing = other, ""
+            else:
+                self.picked[self.i] = {n}
+                self.next_question()
+        self.render()
+
+
+@pytest.fixture
+def asked(bridge, wrappers, conv, monkeypatch):
+    async def make(*qs):
+        ask(conv, *qs)
+        w = await wrappers("w1")
+        bridge.attach_transcript(w.session, conv.path, SID)
+        tui = FakeQuestionTUI(w.session, list(qs))
+        monkeypatch.setattr(bridge, "inject", tui.key)
+        item = next(i for i in w.session.transcript.snapshot() if i.get("name") == "AskUserQuestion")
+        return tui, item["id"]
+    return make
+
+
+async def test_a_whole_question_form_is_answered_on_the_laptop(api, asked):
+    tui, iid = await asked(COLOR, FRUIT)
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": [
+        {"text": "Purple"}, {"options": ["Apple", "Cherry"]}]})
+    assert r.status == 200, await r.text()
+    assert tui.text[0] == "Purple" and tui.picked[1] == {1, 3} and tui.submitted
+    assert tui.keys == [b"4", b"Purple", b"\r", b"1", b"3", b"\t", b"1"]
+
+
+async def test_typed_text_with_multiple_choice(api, asked):
+    tui, iid = await asked(COLOR, FRUIT)
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": [{"options": ["Blue"]}, {"options": ["Cherry"], "text": "Kiwi"}]})
+    assert r.status == 200, await r.text()
+    assert tui.picked == [{3}, {3, 4}] and tui.text[1] == "Kiwi" and tui.submitted
+    down = b"\x1b[B"
+    assert tui.keys == [b"3", b"3", b"4", down, down, down, b"Kiwi", b"\t", b"\r", b"1"]
+
+
+async def test_a_moment_without_a_menu_isnt_the_end(api, asked, fast):
+    tui, iid = await asked(COLOR, FRUIT)
+    tui.blank_first = True
+    fast.on_sleep.append(lambda d: tui.settle())
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": [{"options": ["Red"]}, {"options": ["Apple"]}]})
+    assert r.status == 200, await r.text()
+    assert tui.submitted
+
+
+async def test_a_picked_option_moves_on_by_itself(api, asked):
+    tui, iid = await asked(COLOR, FRUIT)
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": [{"options": ["Blue"]}, {"options": ["Banana"]}]})
+    assert r.status == 200 and tui.picked == [{3}, {2}] and tui.submitted
+
+
+@pytest.mark.parametrize("answers, message", [
+    ([{"options": ["Red", "Blue"]}, {"options": ["Apple"]}], "Pick one answer"),
+    ([{"options": ["Teal"]}, {"options": ["Apple"]}], "isn't an option"),
+    ([{"options": ["Red"]}, {}], "Nothing chosen"),
+    ([{"options": ["Red"]}], "one answer per question"),
+])
+async def test_answers_that_dont_fit_the_questions_are_refused(api, asked, answers, message):
+    tui, iid = await asked(COLOR, FRUIT)
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": answers})
+    assert r.status == 400 and message in await r.text() and tui.keys == []
+
+
+async def test_a_question_half_answered_at_the_laptop_is_left_alone(api, asked):
+    tui, iid = await asked(COLOR, FRUIT)
+    await tui.key(None, b"2")  # picked at the laptop: the form would start in the wrong place
+    tui.keys.clear()
+    r = await api.post("/api/sessions/w1/answers", json={"item": iid, "answers": [{"options": ["Red"]}, {"options": ["Apple"]}]})
+    assert r.status == 409 and "terminal view" in await r.text() and tui.keys == []
+
+
+async def test_an_answered_question_cant_be_answered_again(api, asked):
+    tui, iid = await asked(COLOR, FRUIT)
+    r = await api.post("/api/sessions/w1/answers", json={"item": "someone-else:0", "answers": [{"options": ["Red"]}, {"options": ["Apple"]}]})
+    assert r.status == 409 and "already answered" in await r.text()
+
+
+# Claude Code (2.1) writes an AskUserQuestion to the transcript only once it's answered; the
+# PreToolUse hook brings the questions while they wait.
+async def test_the_pre_tool_use_hook_brings_a_waiting_question(api, bridge, hooks, wrappers, monkeypatch):
+    w = await wrappers("w1")
+    await hooks.fire("w1", hook_event_name="PreToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q1",
+                     tool_input={"questions": [COLOR, FRUIT]})
+    s = w.session
+    assert s.status == "question" and s.detail == "Which color?"
+    summary = s.summary()
+    assert summary["question_id"] == "toolu_q1" and [q["question"] for q in summary["questions"]] == ["Which color?", "Which fruits?"]
+    n = bridge.notifications[-1]
+    assert n["kind"] == "question" and n["qid"] == "toolu_q1" and "options" not in n  # two questions: the form, not buttons
+    # The tool-permission hook Claude Code sends for the same dialog doesn't turn it into a permission prompt.
+    await hooks.fire("w1", hook_event_name="Notification", notification_type="permission_prompt", message="Claude needs your permission")
+    assert s.status == "question"
+    # Answered from the phone's form by the tool call's id.
+    tui = FakeQuestionTUI(s, [COLOR, FRUIT])
+    monkeypatch.setattr(bridge, "inject", tui.key)
+    r = await api.post("/api/sessions/w1/answers", json={"qid": "toolu_q1", "answers": [{"options": ["Red"]}, {"options": ["Banana"]}]})
+    assert r.status == 200 and tui.submitted and tui.picked == [{1}, {2}]
+    await hooks.fire("w1", hook_event_name="PostToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q1")
+    assert s.asked is None and s.status == "working" and s.summary()["questions"] is None
+
+
+async def test_a_lone_hooked_question_gets_buttons_in_its_notification(bridge, hooks, wrappers):
+    await wrappers("w1")
+    await hooks.fire("w1", hook_event_name="PreToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q2",
+                     tool_input={"questions": [COLOR]})
+    n = bridge.notifications[-1]
+    assert n["qid"] == "toolu_q2" and n["options"] == ["Red", "Green", "Blue"]
+
+
+async def test_other_tools_pre_tool_use_hooks_change_nothing(bridge, hooks, wrappers):
+    w = await wrappers("w1")
+    before = w.session.status
+    await hooks.fire("w1", hook_event_name="PreToolUse", tool_name="Bash", tool_use_id="t", tool_input={"command": "ls"})
+    assert w.session.status == before and w.session.asked is None

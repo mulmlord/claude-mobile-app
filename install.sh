@@ -31,11 +31,18 @@ path, hook = sys.argv[1], sys.argv[2]
 with open(path) as f:
     s = json.load(f)
 hooks = s.setdefault("hooks", {})
-for event in ("SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"):
+# PreToolUse/PostToolUse only for AskUserQuestion: Claude Code writes a question to the
+# transcript once it's answered, so the bridge gets the waiting questions from the hook.
+events = {"SessionStart": None, "UserPromptSubmit": None, "Stop": None, "Notification": None, "SessionEnd": None,
+          "PreToolUse": "AskUserQuestion", "PostToolUse": "AskUserQuestion"}
+for event, matcher in events.items():
     groups = hooks.setdefault(event, [])
     if any(h.get("command") == hook for g in groups for h in g.get("hooks", [])):
         continue
-    groups.append({"hooks": [{"type": "command", "command": hook, "timeout": 5}]})
+    group = {"hooks": [{"type": "command", "command": hook, "timeout": 5}]}
+    if matcher:
+        group = {"matcher": matcher, **group}
+    groups.append(group)
 with open(path, "w") as f:
     json.dump(s, f, indent=2)
     f.write("\n")

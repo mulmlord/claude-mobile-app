@@ -17,6 +17,17 @@ MAX_TEXT = 20_000
 MAX_RESULT = 3_000
 MAX_DIFF_LINES = 300
 MAX_DIFF_CHARS = 30_000
+def question_list(raw) -> list[dict]:
+    """AskUserQuestion's questions as the phone uses them (from the transcript or the PreToolUse hook)."""
+    if not isinstance(raw, list):
+        return []
+    return [{"question": str(q.get("question") or ""), "header": str(q.get("header") or ""),
+             "multiSelect": bool(q.get("multiSelect")),
+             "options": [{"label": str(o.get("label") or ""), "description": str(o.get("description") or "")}
+                         for o in q.get("options") or [] if isinstance(o, dict)]}
+            for q in raw if isinstance(q, dict)]
+
+
 # Images Claude looks at with Read (screenshots...): the phone shows them in the tool row.
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
@@ -310,12 +321,7 @@ class Transcript:
                     if diff:
                         item["diff"], item["add"], item["del"] = diff["lines"], diff["add"], diff["del"]
                     if name == "AskUserQuestion":
-                        item["questions"] = [
-                            {"question": q.get("question", ""), "header": q.get("header", ""),
-                             "multiSelect": bool(q.get("multiSelect")),
-                             "options": [{"label": o.get("label", ""), "description": o.get("description", "")}
-                                         for o in q.get("options") or []]}
-                            for q in inp.get("questions") or []]
+                        item["questions"] = question_list(inp.get("questions"))
                         self.pending_question = b.get("id")
                     self.tool_items[b.get("id", iid)] = iid
                     yield self._add(item, idx), False
