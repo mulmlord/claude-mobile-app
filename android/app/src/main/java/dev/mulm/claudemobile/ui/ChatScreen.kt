@@ -573,9 +573,10 @@ private fun ToolRow(item: Item, reveal: Boolean = false) {
             Spacer(Modifier.width(8.dp))
             Text(item.name, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = c.text)
             Spacer(Modifier.width(8.dp))
+            // Wraps in full instead of ending in "…" (Bash summaries can run to 200 characters).
             Text(
-                item.summary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace,
-                color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                item.summary, fontSize = 12.5.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace,
+                color = c.faint, modifier = Modifier.weight(1f),
             )
             if (item.added + item.removed > 0) {
                 Spacer(Modifier.width(8.dp))
