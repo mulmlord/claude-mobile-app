@@ -229,8 +229,8 @@ private fun blocks(sc: ScreenState): List<TermBlock> {
 
 /**
  * The status lines under the prompt box, like on the laptop: one row each, all in the same
- * size, shrunk (down to 7 sp) until the longest fits; only beyond that would one wrap. The
- * indentation they all share goes, their alignment to each other stays.
+ * size, shrunk (down to 7 sp) until the longest fits; only beyond that would one wrap. All
+ * start at the left edge.
  */
 @Composable
 private fun FitBlock(text: AnnotatedString, style: TextStyle) {
@@ -242,8 +242,9 @@ private fun FitBlock(text: AnnotatedString, style: TextStyle) {
             all += text.subSequence(at, end)
             at = end + 1
         }
-        val indent = all.filter { it.isNotBlank() }.minOfOrNull { l -> l.indexOfFirst { it != ' ' }.coerceAtLeast(0) } ?: 0
-        all.map { if (it.length >= indent) it.subSequence(indent, it.length) else it }
+        // Each line starts at the left edge: on the laptop the mode line ("⏵⏵ auto mode on")
+        // sits two columns left of the status line, which reads as misaligned on the phone.
+        all.map { l -> l.subSequence(l.indexOfFirst { it != ' ' }.let { if (it < 0) l.length else it }, l.length) }
     }
     val measurer = rememberTextMeasurer()
     BoxWithConstraints(Modifier.fillMaxWidth()) {

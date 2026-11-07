@@ -292,54 +292,61 @@ private fun ChatHeader(
 ) {
     val c = Claude.colors
     val working = session?.status == "working" && session.connected
-    Row(
+    // Title beside the buttons; the subtitle below gets the full width, so it fits one line.
+    Column(
         Modifier.fillMaxWidth().background(c.bg).windowInsetsPadding(WindowInsets.statusBars)
-            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 10.dp)
+            .animateContentSize(tween(200)),
     ) {
-        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = c.text) }
-        Column(Modifier.weight(1f).padding(start = 2.dp, end = 6.dp).animateContentSize(tween(200))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = c.text) }
             Text(
                 session?.title?.ifBlank { null } ?: "Session",
                 fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
+                modifier = Modifier.weight(1f).padding(start = 2.dp, end = 6.dp),
             )
-            Text(
-                buildAnnotatedString {
-                    if (session == null) {
-                        append("Session ended")
-                        return@buildAnnotatedString
+            AnimatedVisibility(
+                visible = working,
+                enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.6f) + expandHorizontally(tween(220), expandFrom = Alignment.End),
+                exit = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 0.6f) + shrinkHorizontally(tween(180), shrinkTowards = Alignment.End),
+            ) {
+                Row {
+                    Surface(onClick = onStop, shape = CircleShape, color = c.accentButton, modifier = Modifier.size(36.dp)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(11.dp).clip(RoundedCornerShape(2.5.dp)).background(c.onAccent).semantics { contentDescription = "Stop" })
+                        }
                     }
-                    append("${session.project} · ${statusText(session)}")
-                    if (session.context > 0) {
-                        val pct = (session.context * 100 / session.contextMax).toInt()
-                        append(" · ")
-                        if (pct >= 80) withStyle(SpanStyle(color = c.accentButton)) { append("$pct% context") }
-                        else append("$pct% context")
-                    }
-                },
-                fontSize = 12.5.sp, lineHeight = 17.sp, color = c.faint, modifier = Modifier.padding(top = 1.dp),
-            )
-        }
-        AnimatedVisibility(
-            visible = working,
-            enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.6f) + expandHorizontally(tween(220), expandFrom = Alignment.End),
-            exit = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 0.6f) + shrinkHorizontally(tween(180), shrinkTowards = Alignment.End),
-        ) {
-            Row {
-                Surface(onClick = onStop, shape = CircleShape, color = c.accentButton, modifier = Modifier.size(36.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(11.dp).clip(RoundedCornerShape(2.5.dp)).background(c.onAccent).semantics { contentDescription = "Stop" })
-                    }
+                    Spacer(Modifier.width(6.dp))
                 }
-                Spacer(Modifier.width(6.dp))
             }
+            val fill by animateColorAsState(if (terminalOpen) c.raised else Color.Transparent, tween(200), label = "terminal")
+            val tint by animateColorAsState(if (terminalOpen) c.text else c.muted, tween(200), label = "terminalIcon")
+            Surface(onClick = onTerminal, shape = CircleShape, color = fill, modifier = Modifier.size(36.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(TerminalIcon, "Terminal", Modifier.size(18.dp), tint = tint) }
+            }
+            menu()
         }
-        val fill by animateColorAsState(if (terminalOpen) c.raised else Color.Transparent, tween(200), label = "terminal")
-        val tint by animateColorAsState(if (terminalOpen) c.text else c.muted, tween(200), label = "terminalIcon")
-        Surface(onClick = onTerminal, shape = CircleShape, color = fill, modifier = Modifier.size(36.dp)) {
-            Box(contentAlignment = Alignment.Center) { Icon(TerminalIcon, "Terminal", Modifier.size(18.dp), tint = tint) }
-        }
-        menu()
+        Text(
+            buildAnnotatedString {
+                if (session == null) {
+                    append("Session ended")
+                    return@buildAnnotatedString
+                }
+                // No-break spaces inside each part: a line can only break at the "·" between
+                // parts, never between "49%" and "context".
+                fun unit(t: String) = t.replace(' ', '\u00A0')
+                append(unit(session.project) + " · " + unit(statusText(session)))
+                if (session.context > 0) {
+                    val pct = (session.context * 100 / session.contextMax).toInt()
+                    append(" · ")
+                    if (pct >= 80) withStyle(SpanStyle(color = c.accentButton)) { append(unit("$pct% context")) }
+                    else append(unit("$pct% context"))
+                }
+            },
+            fontSize = 12.5.sp, lineHeight = 17.sp, color = c.faint,
+            // Lined up under the title (past the 48 dp back button).
+            modifier = Modifier.padding(start = 50.dp, end = 12.dp),
+        )
     }
 }
 
