@@ -22,7 +22,10 @@ with push notifications when a session finishes, needs permission, or asks a que
 * **Chat** shows the transcript (messages, tool calls with results). Sending a message
   types it into the session exactly as if you'd typed it at the laptop. Edit, MultiEdit and
   Write calls show a red/green line diff with +/− counts; one waiting for your permission
-  opens by itself. The composer has a mic (Android speech-to-text). The **+** button sends a photo (shrunk to 2000 px JPEG) to
+  opens by itself. A Read of an image (a screenshot Claude looks at) shows the picture in its
+  row, served by the bridge only for files the transcript says Claude read; tap for full screen,
+  pinch to zoom. Long-press a message to copy it; code blocks have a Copy button. The composer
+  has a mic (Android speech-to-text). The **+** button sends a photo (shrunk to 2000 px JPEG) to
   `~/.cache/claude-mobile/uploads/` (kept 14 days) and puts its path in the message, where
   Claude reads it. The chat header shows how full the context is (models seen past 200k
   tokens count as 1M, remembered in `big_context_models`).
@@ -166,7 +169,7 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?, "message"?}` (with `no`: typed in as the next turn once the prompt closes),
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
-`POST …/redraw` (have Claude Code repaint its screen), `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
+`GET …/items/{iid}/image` (an image Claude read), `POST …/redraw` (have Claude Code repaint its screen), `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
 or a dialog is open),
 WebSocket `/api/ws` (`notify` events: `id, sid, kind, title, body`, plus `tool` {`name, summary,
 detail` or `diff, add, del`} on permission and `qid, options` on questions),

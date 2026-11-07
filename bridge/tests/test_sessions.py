@@ -779,3 +779,27 @@ async def test_big_context_in_the_summary(bridge, wrappers, conv):
     assert (d["context"], d["context_max"], d["model"]) == (250_011, 1_000_000, "claude-opus-5-5")
     assert d["last_text"] == "big"
     assert "claude-opus-5-5" in server.BIG_CONTEXT_MODELS
+
+
+# ---- images Claude read, for the tool row ---------------------------------------------------
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+
+
+async def test_an_image_claude_read_is_served(api, bridge, wrappers, conv, sandbox):
+    img = sandbox.home / "proj" / "shot.png"
+    img.parent.mkdir(exist_ok=True)
+    img.write_bytes(PNG)
+    read = conv.tool_use("Read", {"file_path": "shot.png"})  # relative: against the session's cwd
+    text = conv.tool_use("Read", {"file_path": str(sandbox.home / "proj" / "notes.txt")})
+    conv.write(conv.assistant(read, text))
+    w = await wrappers("w1")
+    bridge.attach_transcript(w.session, conv.path, SID)
+    shot, notes = [i for i in w.session.transcript.snapshot() if i["kind"] == "tool"]
+    assert shot["image"] is True and "image" not in notes
+    r = await api.get(f"/api/sessions/w1/items/{shot['id']}/image")
+    assert r.status == 200 and r.headers["Content-Type"] == "image/png" and await r.read() == PNG
+    assert (await api.get(f"/api/sessions/w1/items/{notes['id']}/image")).status == 404  # not an image
+    assert (await api.get("/api/sessions/w1/items/nope/image")).status == 404
+    img.unlink()
+    r = await api.get(f"/api/sessions/w1/items/{shot['id']}/image")
+    assert r.status == 404 and "anymore" in await r.text()

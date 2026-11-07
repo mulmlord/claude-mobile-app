@@ -522,6 +522,18 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     suspend fun endSession(sid: String, force: Boolean = false) =
         call("/api/sessions/$sid/end", JSONObject().put("force", force))
 
+    /** An image Claude read in a session (see Item.image), as the file is on the laptop now. */
+    suspend fun itemImage(sid: String, iid: String): ByteArray = withContext(Dispatchers.IO) {
+        val url = prefs.url.toHttpUrlOrNull()?.newBuilder()
+            ?.addPathSegments("api/sessions/$sid/items")?.addPathSegment(iid)?.addPathSegment("image")?.build()
+            ?: throw BridgeError("Invalid address")
+        val req = Request.Builder().url(url).header("Authorization", "Bearer " + prefs.token).build()
+        http.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) throw BridgeError(r.body.string().ifBlank { "HTTP ${r.code}" })
+            r.body.bytes()
+        }
+    }
+
     /** Has Claude Code repaint its screen, for a terminal view that misses parts drawn earlier. */
     suspend fun redraw(sid: String) = call("/api/sessions/$sid/redraw", JSONObject())
 

@@ -71,6 +71,8 @@ data class Item(
     val diff: List<String> = emptyList(),
     val added: Int = 0,
     val removed: Int = 0,
+    /** A Read of an image file: the bridge serves it at /api/sessions/{sid}/items/{id}/image. */
+    val image: Boolean = false,
 ) {
     companion object {
         fun from(o: JSONObject) = Item(
@@ -80,6 +82,7 @@ data class Item(
             questions = Question.list(o.optJSONArray("questions")),
             diff = o.optJSONArray("diff")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList(),
             added = o.optInt("add"), removed = o.optInt("del"),
+            image = o.optBoolean("image"),
         )
     }
 }

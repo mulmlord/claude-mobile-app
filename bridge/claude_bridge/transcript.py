@@ -17,6 +17,8 @@ MAX_TEXT = 20_000
 MAX_RESULT = 3_000
 MAX_DIFF_LINES = 300
 MAX_DIFF_CHARS = 30_000
+# Images Claude looks at with Read (screenshots...): the phone shows them in the tool row.
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 
 def _clip(s: str, n: int) -> str:
@@ -300,6 +302,10 @@ class Transcript:
                     inp = b.get("input") or {}
                     item = {"id": iid, "kind": "tool", "name": name, "summary": tool_summary(name, inp, self.cwd),
                             "detail": tool_detail(name, inp), "ts": ts, "status": "running"}
+                    path = str(inp.get("file_path") or "") if name == "Read" else ""
+                    if path.lower().endswith(IMAGE_EXTS):
+                        item["image"] = True
+                        item["file"] = path if os.path.isabs(path) else os.path.join(self.cwd or "", path)
                     diff = tool_diff(name, inp)
                     if diff:
                         item["diff"], item["add"], item["del"] = diff["lines"], diff["add"], diff["del"]

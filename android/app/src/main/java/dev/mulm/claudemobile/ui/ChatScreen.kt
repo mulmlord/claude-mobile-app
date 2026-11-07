@@ -2,6 +2,14 @@ package dev.mulm.claudemobile.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.statusBars
@@ -272,7 +280,7 @@ fun ChatScreen(sid: String) {
         },
     ) { pad ->
         MessageList(
-            items, pad, working = session?.status == "working" && session.connected,
+            sid, items, pad, working = session?.status == "working" && session.connected,
             query = query, matches = remember(matches) { matches.toSet() },
             current = if (searching) matches.getOrNull(cur) else null, jump = jump, searching = searching,
         )
@@ -442,7 +450,7 @@ private fun statusText(s: SessionInfo) = when {
 
 @Composable
 private fun MessageList(
-    items: List<Item>, pad: PaddingValues, working: Boolean,
+    sid: String, items: List<Item>, pad: PaddingValues, working: Boolean,
     query: String = "", matches: Set<String> = emptySet(), current: String? = null, jump: Int = 0,
     searching: Boolean = false,
 ) {
@@ -507,7 +515,7 @@ private fun MessageList(
                     "assistant" -> AssistantText(item.text)
                     "thinking" -> ThinkingNote(item.text)
                     // A hit only in the command or output: open the row so the match can be seen.
-                    "tool" -> ToolRow(item, reveal = isCurrent && !item.name.contains(q, true) && !item.summary.contains(q, true))
+                    "tool" -> ToolRow(item, sid, reveal = isCurrent && !item.name.contains(q, true) && !item.summary.contains(q, true))
                     else -> SystemNote(item.text)
                 }
             }
@@ -520,9 +528,8 @@ private fun UserBubble(text: String) {
     val c = Claude.colors
     Box(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp), contentAlignment = Alignment.CenterEnd) {
         Surface(color = c.bubble, contentColor = c.text, shape = RoundedCornerShape(18.dp), modifier = Modifier.widthIn(max = 310.dp)) {
-            SelectionContainer {
-                Text(text, fontSize = 15.5.sp, lineHeight = 22.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp))
-            }
+            Text(text, fontSize = 15.5.sp, lineHeight = 22.sp,
+                modifier = Modifier.copyOnLongPress(text).padding(horizontal = 15.dp, vertical = 10.dp))
         }
     }
 }
@@ -538,9 +545,8 @@ private fun ThinkingNote(text: String) {
         Box(Modifier.width(2.dp).fillMaxHeight().clip(RoundedCornerShape(1.dp)).background(c.borderStrong))
         Column(Modifier.padding(start = 12.dp)) {
             Text("Thinking", fontSize = 11.5.sp, fontWeight = FontWeight.Medium, color = c.faint)
-            SelectionContainer {
-                Text(text, fontSize = 14.sp, lineHeight = 20.sp, color = c.muted, modifier = Modifier.padding(top = 2.dp))
-            }
+            Text(text, fontSize = 14.sp, lineHeight = 20.sp, color = c.muted,
+                modifier = Modifier.copyOnLongPress(text).padding(top = 2.dp))
         }
     }
 }
@@ -551,7 +557,8 @@ internal fun AssistantText(text: String) {
     val body = ReplyStyle.copy(color = c.text)
     val heading = { size: Int, line: Int -> body.copy(fontSize = size.sp, lineHeight = line.sp, fontWeight = FontWeight.SemiBold) }
     val mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.sp, color = c.text)
-    SelectionContainer {
+    // Long-press copies the whole message; code blocks have their own Copy.
+    Box(Modifier.copyOnLongPress(text)) {
         Markdown(
             content = text,
             colors = markdownColor(
@@ -567,9 +574,69 @@ internal fun AssistantText(text: String) {
                 table = body.copy(fontSize = 14.5.sp, lineHeight = 21.sp),
                 textLink = TextLinkStyles(SpanStyle(color = c.text, textDecoration = TextDecoration.Underline)),
             ),
+            components = markdownComponents(
+                codeFence = { m -> MarkdownCodeFence(m.content, m.node, m.typography.code) { code, language, style -> CodeBox(code, language, style) } },
+                codeBlock = { m -> MarkdownCodeBlock(m.content, m.node, m.typography.code) { code, language, style -> CodeBox(code, language, style) } },
+            ),
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         )
     }
+}
+
+/** A code block in Claude's reply: its language and a Copy button on top, the code wrapped below. */
+@Composable
+private fun CodeBox(code: String, language: String?, style: TextStyle) {
+    val c = Claude.colors
+    val ctx = LocalContext.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+    Surface(
+        color = c.soft, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, c.border),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+    ) {
+        Column {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(language?.ifBlank { null } ?: "code", fontSize = 11.5.sp, fontFamily = FontFamily.Monospace,
+                    color = c.faint, modifier = Modifier.weight(1f))
+                Row(
+                    Modifier.clip(RoundedCornerShape(8.dp)).clickable { copyText(ctx, code); copied = true }
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(if (copied) Icons.Filled.Check else CopyIcon, null, Modifier.size(14.dp),
+                        tint = if (copied) c.success else c.muted)
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (copied) "Copied" else "Copy", fontSize = 12.sp, color = if (copied) c.success else c.muted)
+                }
+            }
+            HorizontalDivider(color = c.border)
+            Text(code.trimEnd('\n'), style = style.copy(color = c.text), softWrap = true, modifier = Modifier.padding(12.dp))
+        }
+    }
+}
+
+/** Long-press copies [text], with a buzz and a toast (HyperOS doesn't show Android's own "Copied"). */
+@Composable
+private fun Modifier.copyOnLongPress(text: String): Modifier {
+    val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    return pointerInput(text) {
+        detectTapGestures(onLongPress = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            copyText(ctx, text)
+            android.widget.Toast.makeText(ctx, "Message copied", android.widget.Toast.LENGTH_SHORT).show()
+        })
+    }
+}
+
+private fun copyText(ctx: android.content.Context, text: String) {
+    ctx.getSystemService(android.content.ClipboardManager::class.java)
+        .setPrimaryClip(android.content.ClipData.newPlainText("Claude", text))
 }
 
 @Composable
@@ -582,7 +649,7 @@ private fun SystemNote(text: String) {
 }
 
 @Composable
-private fun ToolRow(item: Item, reveal: Boolean = false) {
+private fun ToolRow(item: Item, sid: String, reveal: Boolean = false) {
     // An edit waiting for your permission opens by itself, so you read the change before allowing it.
     var manual by rememberSaveable(item.id) { mutableStateOf<Boolean?>(null) }
     val hasDiff = item.diff.isNotEmpty()
@@ -621,6 +688,11 @@ private fun ToolRow(item: Item, reveal: Boolean = false) {
             }
             val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
             Icon(Icons.Filled.KeyboardArrowDown, null, Modifier.size(18.dp).rotate(turn), tint = c.faint)
+        }
+        // An image Claude looked at (a screenshot...): the picture itself, under the row.
+        if (item.image && item.status != "running") {
+            HorizontalDivider(color = c.border)
+            ToolImage(sid, item)
         }
         if (item.name == "AskUserQuestion" && item.questions.isNotEmpty()) {
             HorizontalDivider(color = c.border)

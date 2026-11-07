@@ -96,6 +96,13 @@ val StopIcon: ImageVector by lazy {
     }.build()
 }
 
+val CopyIcon: ImageVector by lazy {
+    strokeIcon("Copy") {
+        moveTo(9.5f, 9.5f); lineTo(18.5f, 9.5f); lineTo(18.5f, 18.5f); lineTo(9.5f, 18.5f); close()
+        moveTo(14.5f, 9.5f); lineTo(14.5f, 5.5f); lineTo(5.5f, 5.5f); lineTo(5.5f, 14.5f); lineTo(9.5f, 14.5f)
+    }
+}
+
 val TerminalIcon: ImageVector by lazy {
     strokeIcon("Terminal") {
         moveTo(5f, 7.5f); lineTo(9.5f, 12f); lineTo(5f, 16.5f)

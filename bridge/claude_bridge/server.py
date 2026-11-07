@@ -23,6 +23,7 @@ import re
 import secrets
 import signal
 import socket
+import stat as stat_mod
 import struct
 import termios
 import time
@@ -30,6 +31,7 @@ import time
 from aiohttp import WSMsgType, web
 
 from . import github, launcher
+from . import transcript as transcript_mod
 from .screen import Screen, match_option
 from .transcript import Transcript
 
@@ -55,6 +57,7 @@ ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 RENAME_MAX = 80
 FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
 WS_HEARTBEAT = 120  # seconds between pings to a quiet phone; it gets half that to answer
+IMAGE_MAX = 20 * 1024 * 1024  # largest image the phone is sent from a Read
 REDRAW_AFTER = 5.0  # a wrapper connecting this long after its claude started gets a repaint
 REDRAW_PAUSE = 0.5  # seconds the terminal is a row shorter while forcing that repaint
 SNAPSHOT_FIRST = 60  # items sent first when the phone opens a chat; the rest right after
@@ -772,6 +775,23 @@ class Bridge:
     async def api_sessions(self, request):
         return web.json_response(self.sessions_msg())
 
+    async def api_item_image(self, request):
+        """An image Claude read in this session (a Read of a .png, .jpg...), for the tool row.
+        Only files the transcript says Claude opened that way are served."""
+        s = self.get_session(request)
+        item = (s.transcript.items if s.transcript else {}).get(request.match_info["iid"])
+        path = (item or {}).get("file") or ""
+        if not item or not item.get("image") or not path.lower().endswith(transcript_mod.IMAGE_EXTS):
+            raise web.HTTPNotFound(text="no such image")
+        try:
+            st = os.stat(path)
+        except OSError:
+            raise web.HTTPNotFound(text="The image isn't on the laptop anymore")
+        if not stat_mod.S_ISREG(st.st_mode) or st.st_size > IMAGE_MAX:
+            raise web.HTTPNotFound(text="no such image")
+        kind = {".jpg": "jpeg", ".jpeg": "jpeg"}.get(os.path.splitext(path)[1].lower(), os.path.splitext(path)[1][1:].lower())
+        return web.FileResponse(path, headers={"Content-Type": f"image/{kind}", "Cache-Control": "private, max-age=86400"})
+
     async def api_items(self, request):
         s = self.get_session(request)
         try:
@@ -1175,6 +1195,7 @@ def make_app(bridge: Bridge) -> web.Application:
     app.router.add_get("/api/health", bridge.api_health)
     app.router.add_get("/api/sessions", bridge.api_sessions)
     app.router.add_get("/api/sessions/{sid}/items", bridge.api_items)
+    app.router.add_get("/api/sessions/{sid}/items/{iid}/image", bridge.api_item_image)
     app.router.add_get("/api/sessions/{sid}/screen", bridge.api_screen)
     app.router.add_post("/api/sessions/{sid}/send", bridge.api_send)
     app.router.add_post("/api/sessions/{sid}/keys", bridge.api_keys)
