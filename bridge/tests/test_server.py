@@ -458,3 +458,12 @@ async def test_websocket_hello_sessions_and_ping(api, bridge, sandbox):
     assert await ws.receive_json() == {"t": "pong"}
     await ws.close()
     await until(lambda: not bridge.clients, what="client to go")
+
+
+def test_the_newer_of_release_and_debug_is_offered(bridge, sandbox):
+    build_apk(sandbox.apk / "debug", version=20, data=b"debug")
+    build_apk(sandbox.apk / "release", version=21, data=b"release")
+    info, path = bridge.app_build()
+    assert info["versionCode"] == 21 and path.endswith("/release/app-debug.apk")
+    build_apk(sandbox.apk / "debug", version=22, data=b"newer debug")
+    assert bridge.app_build()[0]["versionCode"] == 22

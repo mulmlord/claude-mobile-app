@@ -37,9 +37,11 @@ RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getu
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "claude-mobile")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 STATE_FILE = os.path.join(RUNTIME, "state.json")
-# Where Gradle puts the debug APK of the app in this repo (config "apk_dir" overrides).
+# Where Gradle puts the app's APKs in this repo (config "apk_dir" overrides). Its release/
+# and debug/ folders are both looked at, and the one with the higher versionCode is offered
+# (release on a tie): release builds are the fast ones, debug builds still work.
 APK_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                        "..", "..", "android", "app", "build", "outputs", "apk", "debug"))
+                                        "..", "..", "android", "app", "build", "outputs", "apk"))
 UPLOADS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "claude-mobile", "uploads")
 
 KEYS = {
@@ -51,6 +53,7 @@ ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 RENAME_MAX = 80
 FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
 WS_HEARTBEAT = 120  # seconds between pings to a quiet phone; it gets half that to answer
+SNAPSHOT_FIRST = 60  # items sent first when the phone opens a chat; the rest right after
 MESSAGE_WAIT = 5.0  # seconds a "deny and tell Claude" waits for the prompt to close
 
 
@@ -296,7 +299,7 @@ class Bridge:
         self.github = github.GitHub(self.history)
         self.awake = launcher.Awake(cfg)
         self.spawns: dict[str, asyncio.Future] = {}
-        self.app_cache: tuple | None = None  # (metadata mtime, info, apk path)
+        self.app_cache: tuple | None = None  # (metadata mtimes, info, apk path)
         try:
             with open(STATE_FILE) as f:
                 self.saved_state = json.load(f)
@@ -689,7 +692,9 @@ class Bridge:
 
     def screen_msg(self, s: Session) -> dict:
         x, y = s.screen.cursor()
-        return {"t": "screen", "sid": s.id, "lines": s.screen.lines(), "cursor": [x, y],
+        lines, runs, styles = s.screen.styled()
+        # runs/styles: the colours, for a phone that shows them (older apps read lines only).
+        return {"t": "screen", "sid": s.id, "lines": lines, "runs": runs, "styles": styles, "cursor": [x, y],
                 "cols": s.screen.cols, "rows": s.screen.rows,
                 "options": s.screen.dialog_options(), "prompt": s.screen.dialog_text()}
 
@@ -907,16 +912,32 @@ class Bridge:
     # ---- app updates -----------------------------------------------------------
     def app_build(self) -> tuple[dict, str] | None:
         """Newest built APK, from Gradle's output-metadata.json, with a sha256 to verify the download."""
-        d = self.cfg.get("apk_dir") or APK_DIR
-        meta = os.path.join(d, "output-metadata.json")
-        try:
-            mtime = os.stat(meta).st_mtime
-        except OSError:
+        base = self.cfg.get("apk_dir") or APK_DIR
+        dirs = [os.path.join(base, "release"), os.path.join(base, "debug"), base]
+        stamps = []
+        for d in dirs:
+            try:
+                stamps.append(os.stat(os.path.join(d, "output-metadata.json")).st_mtime)
+            except OSError:
+                stamps.append(None)
+        if all(t is None for t in stamps):
             return None
-        if self.app_cache and self.app_cache[0] == mtime:
+        if self.app_cache and self.app_cache[0] == stamps:
             return self.app_cache[1], self.app_cache[2]
+        best = None
+        for d, t in zip(dirs, stamps):
+            found = self._apk_in(d) if t is not None else None
+            if found and (best is None or found[0]["versionCode"] > best[0]["versionCode"]):
+                best = found
+        if best is None:
+            return None
+        self.app_cache = (stamps, best[0], best[1])
+        return best
+
+    @staticmethod
+    def _apk_in(d: str) -> tuple[dict, str] | None:
         try:
-            with open(meta) as f:
+            with open(os.path.join(d, "output-metadata.json")) as f:
                 el = json.load(f)["elements"][0]
             apk = os.path.join(d, el["outputFile"])
             h = hashlib.sha256()
@@ -927,7 +948,6 @@ class Bridge:
                     "size": os.path.getsize(apk), "sha256": h.hexdigest()}
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             return None
-        self.app_cache = (mtime, info, apk)
         return info, apk
 
     async def api_app(self, request):
@@ -1040,7 +1060,7 @@ class Bridge:
         await ws.prepare(request)
         c = Client(ws)
         self.clients.add(c)
-        log.info("client connected (%d)", len(self.clients))
+        log.info("client connected (%d)%s", len(self.clients), ", compressed" if ws.compress else ", uncompressed")
         try:
             b = await asyncio.to_thread(self.app_build)
             await c.send({"t": "hello", "host": socket.gethostname(), "notify_id": self.next_notify_id,
@@ -1065,8 +1085,16 @@ class Bridge:
                     c.sub = d.get("sid")
                     s = self.sessions.get(c.sub or "")
                     if s:
-                        await c.send({"t": "items", "sid": s.id, "reset": True,
-                                      "items": s.transcript.snapshot() if s.transcript else []})
+                        # Newest first, so the phone can show the bottom of the chat at once; the
+                        # older part follows, taken fresh so it can't undo updates sent meanwhile.
+                        items = s.transcript.snapshot() if s.transcript else []
+                        recent = items[-SNAPSHOT_FIRST:]
+                        await c.send({"t": "items", "sid": s.id, "reset": True, "items": recent})
+                        if len(items) > len(recent) and c.sub == s.id:
+                            sent = {i["id"] for i in recent}
+                            older = [i for i in s.transcript.snapshot() if i["id"] not in sent]
+                            if older:
+                                await c.send({"t": "items", "sid": s.id, "reset": False, "items": older})
                 elif t == "screen":
                     c.screen_sub = d.get("sid")
                     c.screen_version = -1

@@ -51,13 +51,18 @@ with push notifications when a session finishes, needs permission, or asks a que
   if missing). "Work on it" / "Ask Claude to review" / "Ask Claude to fix it" start a
   session in the clone with an editable first message.
 * **Updates without USB.** The bridge offers the newest APK Gradle built in this repo
-  (`android/app/build/outputs/apk/debug`, from `output-metadata.json`; `apk_dir` in the
-  config overrides it). When its versionCode is higher, the app shows "Update ready";
+  (`android/app/build/outputs/apk/{release,debug}`, from `output-metadata.json`, whichever
+  has the higher versionCode; `apk_dir` in the config overrides the folder). Build the fast
+  one with `./gradlew assembleRelease` (R8, signed with the debug key so it updates in place
+  over debug builds; not debuggable, so `run-as`/jdb need a debug build). When its versionCode is higher, the app shows "Update ready";
   Settings → App downloads it over Tailscale, checks the sha256 and hands it to Android's
   installer. Android asks once to allow installs from Claude Mobile.
 * **Menus** such as permission prompts, the folder-trust dialog and AskUserQuestion are
   read off the session's virtual screen and offered as buttons. The `>_` view shows the
-  live terminal plus Esc/arrows/Enter for anything else.
+  live terminal plus Esc/arrows/Enter for anything else: in the laptop's colours (the bridge
+  sends style runs from pyte; the app maps the 16 ANSI colours to a warm palette), wrapped to
+  the phone's width, with prompt-box side walls removed, rules drawn as hairlines and long
+  runs of padding shrunk. Opening a chat sends its newest 60 items first, the rest right after.
 * **New sessions from the phone.** "New session" lists the folders Claude Code has run in
   (from `~/.claude/projects`), newest first. Start a fresh session there or resume a recent
   one: the bridge opens a normal terminal window on the laptop (via `uwsm-app`, so it
@@ -128,7 +133,7 @@ The laptop has to stay awake (not suspended) for any of this to work.
 | `bin/claude-mobile-wrap` | Stdlib-only PTY wrapper; connects to the bridge best-effort |
 | `bin/claude-mobile-hook` | Hook → bridge forwarder (curl over a unix socket, always exits 0) |
 | `bridge/` | Python daemon (aiohttp + pyte): sessions, transcripts, screen, API |
-| `android/` | Kotlin/Compose app (`./gradlew assembleDebug`) |
+| `android/` | Kotlin/Compose app (`./gradlew assembleRelease`; `assembleDebug` for debugging) |
 | `uninstall.sh` | Reverts everything `install.sh` did |
 
 Logs: `journalctl --user -u claude-mobile-bridge -f`

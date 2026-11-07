@@ -86,14 +86,32 @@ data class Item(
 
 data class MenuOption(val index: Int, val key: String?, val label: String, val selected: Boolean)
 
+/** How a run of terminal text looks: fg/bg "" (the terminal's default), a colour name or "#rrggbb". */
+data class TermStyle(val fg: String, val bg: String, val flags: Int) {
+    val bold get() = flags and 1 != 0
+    val italic get() = flags and 2 != 0
+    val underline get() = flags and 4 != 0
+    val reverse get() = flags and 8 != 0
+    val dim get() = flags and 16 != 0
+    val strike get() = flags and 32 != 0
+
+    companion object {
+        val Plain = TermStyle("", "", 0)
+    }
+}
+
 data class ScreenState(
     val sid: String, val lines: List<String>, val cols: Int, val options: List<MenuOption>,
     /** The open menu's prompt text as shown on screen. */
     val prompt: String = "",
+    /** Per line: [length, style, length, style, ...] in code points, empty when the line is plain. */
+    val runs: List<IntArray> = emptyList(),
+    val styles: List<TermStyle> = emptyList(),
 ) {
     companion object {
         fun from(o: JSONObject): ScreenState {
             val lines = o.optJSONArray("lines")
+            val runs = o.optJSONArray("runs")
             return ScreenState(
                 sid = o.s("sid"),
                 lines = if (lines == null) emptyList() else (0 until lines.length()).map { lines.optString(it) },
@@ -102,6 +120,16 @@ data class ScreenState(
                     MenuOption(it.optInt("index"), if (it.isNull("key")) null else it.s("key"), it.s("label"), it.optBoolean("selected"))
                 },
                 prompt = o.s("prompt"),
+                runs = if (runs == null) emptyList() else (0 until runs.length()).map { i ->
+                    val r = runs.optJSONArray(i)
+                    if (r == null) IntArray(0) else IntArray(r.length()) { r.optInt(it) }
+                },
+                styles = o.optJSONArray("styles")?.let { a ->
+                    (0 until a.length()).map { i ->
+                        val st = a.optJSONArray(i)
+                        if (st == null) TermStyle.Plain else TermStyle(st.optString(0), st.optString(1), st.optInt(2))
+                    }
+                }.orEmpty(),
             )
         }
     }

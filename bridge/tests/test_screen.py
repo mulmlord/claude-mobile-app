@@ -163,3 +163,91 @@ def test_match_option(menu, want, picked):
 def test_match_option_prefers_exact_over_normalised():
     menu = opts("yes", "Yes")
     assert match_option(menu, "Yes")["index"] == 1
+
+
+# ---- colours for the phone's terminal view ----------------------------------------------------
+def styled(data: bytes, cols=40, rows=5):
+    sc = Screen(cols, rows)
+    sc.feed(data)
+    return sc.styled()
+
+
+def spans(lines, runs, styles):
+    """[(text, [fg, bg, flags]), ...] per line, from styled()'s code-point runs."""
+    out = []
+    for text, r in zip(lines, runs):
+        if not r:
+            out.append([(text, ["", "", 0])])
+            continue
+        row, n = [], 0
+        for k in range(0, len(r), 2):
+            row.append((text[n:n + r[k]], styles[r[k + 1]]))
+            n += r[k]
+        assert n == len(text)
+        out.append(row)
+    return out
+
+
+def test_styled_plain_text_has_no_runs():
+    lines, runs, styles = styled(b"hello\r\nworld")
+    assert lines == ["hello", "world"] and runs == [[], []] and styles == [["", "", 0]]
+
+
+def test_styled_named_truecolor_and_256_colours():
+    lines, runs, styles = styled(b"\x1b[31mred\x1b[0m \x1b[38;2;215;119;87mclaude\x1b[0m \x1b[38;5;245mgrey\x1b[0m")
+    assert lines == ["red claude grey"]
+    assert spans(lines, runs, styles)[0] == [
+        ("red", ["red", "", 0]), (" ", ["", "", 0]), ("claude", ["#d77757", "", 0]),
+        (" ", ["", "", 0]), ("grey", ["#8a8a8a", "", 0]),
+    ]
+
+
+def test_styled_dim_bold_reverse_and_their_resets():
+    lines, runs, styles = styled(b"\x1b[2mdim\x1b[22m \x1b[1mbold\x1b[22m \x1b[7msel\x1b[27m plain")
+    row = spans(lines, runs, styles)[0]
+    assert row[0] == ("dim", ["", "", screen_mod.DIM])
+    assert row[2] == ("bold", ["", "", screen_mod.BOLD])
+    assert row[4] == ("sel", ["", "", screen_mod.REVERSE])
+    assert row[-1] == (" plain", ["", "", 0])
+
+
+def test_a_2_inside_a_truecolour_isnt_dim():
+    lines, runs, styles = styled(b"\x1b[38;2;2;5;2mx\x1b[0m")
+    assert spans(lines, runs, styles)[0] == [("x", ["#020502", "", 0])]
+
+
+def test_styled_drops_trailing_blanks_even_with_a_background():
+    lines, runs, styles = styled(b"\x1b[42mok      \x1b[0m")
+    assert lines == ["ok"] and spans(lines, runs, styles)[0] == [("ok", ["", "green", 0])]
+
+
+def test_styled_matches_lines_with_wide_characters():
+    sc = Screen(20, 3)
+    sc.feed("日本 ok\r\n\x1b[32m✓\x1b[0m done".encode())
+    lines, runs, styles = sc.styled()
+    assert lines == sc.lines()
+    assert spans(lines, runs, styles)[1][0] == ("✓", ["green", "", 0])
+
+
+@pytest.mark.parametrize("data", [
+    b"\x1b[58;5;4mX\x1b[59m Y",          # underline colour, 256: its 5 and 4 aren't blink/underline
+    b"\x1b[58;2;4;1;7mX\x1b[59m Y",      # underline colour, truecolor: no underline, bold or reverse
+    b"\x1b[58:2::255:0:0mX\x1b[59m Y",   # the colon form, dropped
+])
+def test_underline_colour_doesnt_style_the_text(data):
+    lines, runs, styles = styled(data)
+    assert lines == ["X Y"] and runs == [[]]
+
+
+def test_colon_colours_and_underline_styles():
+    lines, runs, styles = styled(b"\x1b[38:2::215:119:87mA\x1b[39m\x1b[4:3mB\x1b[4:0mC\x1b[38:5:245mD\x1b[0m")
+    assert lines == ["ABCD"]
+    assert spans(lines, runs, styles)[0] == [
+        ("A", ["#d77757", "", 0]), ("B", ["", "", screen_mod.UNDERLINE]), ("C", ["", "", 0]), ("D", ["#8a8a8a", "", 0]),
+    ]
+
+
+def test_modify_other_keys_isnt_underline_and_dim():
+    lines, runs, styles = styled(b"\x1b[>4;2mhello \x1b[1mbold\x1b[22m\x1b[>4m")
+    assert lines == ["hello bold"]
+    assert spans(lines, runs, styles)[0] == [("hello ", ["", "", 0]), ("bold", ["", "", screen_mod.BOLD])]

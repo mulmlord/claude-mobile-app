@@ -102,6 +102,7 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     private var offlineSince = 0L
     /** elapsedRealtime of the last message from the bridge, for [probe]. */
     @Volatile private var lastHeard = 0L
+    @Volatile private var probing = false
     /**
      * Keeps the CPU up through the first quick retries after a drop. In deep sleep a coroutine
      * delay doesn't run until something else wakes the phone, which can be many minutes later.
@@ -158,10 +159,19 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
      */
     fun ensureConnected() {
         if (!wanted) return
+        val now = SystemClock.elapsedRealtime()
+        var quiet = false
         val stuck = synchronized(connLock) {
-            connectingSince != 0L && SystemClock.elapsedRealtime() - connectingSince > HANDSHAKE_MS
+            quiet = ws != null && _conn.value == Conn.Connected && now - lastHeard > QUIET_MS
+            connectingSince != 0L && now - connectingSince > HANDSHAKE_MS
         }
-        if (stuck) reconnectNow() else retryNow()
+        when {
+            stuck -> reconnectNow()
+            // Back from sleep, the socket may be dead without OkHttp knowing yet (its own ping
+            // only notices within a minute): check now, so the app is live when you look.
+            quiet -> scope.launch { probe(QUICK_PROBE_MS) }
+            else -> retryNow()
+        }
     }
 
     /** The retry alarm fired (or the app came to the front): attempt now if nothing is connected. */
@@ -182,17 +192,22 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
      * Watchdog check: a socket that looks open may be dead (the phone slept through the
      * drop, so OkHttp's own pings never ran). Ask the bridge for a pong; reconnect if none comes.
      */
-    suspend fun probe() {
+    suspend fun probe(timeoutMs: Long = PROBE_MS) {
         val socket = ws ?: return
-        if (_conn.value != Conn.Connected) return
+        if (_conn.value != Conn.Connected || probing) return
+        probing = true
         val before = lastHeard
         socket.send(JSONObject().put("t", "ping").toString())
-        val answered = withTimeoutOrNull(PROBE_MS) {
-            while (lastHeard == before) delay(200)
-            true
-        } ?: false
+        val answered = try {
+            withTimeoutOrNull(timeoutMs) {
+                while (lastHeard == before) delay(100)
+                true
+            } ?: false
+        } finally {
+            probing = false
+        }
         if (!answered && socket === ws) {
-            Log.w(TAG, "no answer to a ping in ${PROBE_MS / 1000}s, reconnecting")
+            Log.w(TAG, "no answer to a ping in ${timeoutMs / 1000}s, reconnecting")
             ConnLog.bad("No answer to a ping, the connection had died. Reconnecting")
             reconnectNow()
         }
@@ -426,6 +441,9 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
         const val TAG = "Bridge"
         const val HANDSHAKE_MS = 45_000L
         const val PROBE_MS = 10_000L
+        /** On coming to the front: ping if nothing came for this long, and allow this long for the pong. */
+        const val QUIET_MS = 30_000L
+        const val QUICK_PROBE_MS = 4_000L
         const val HTTPS_ONLY = "Use an https:// address. Unencrypted connections are off"
         /** Retries this soon keep the CPU awake; later ones wait for an alarm. */
         const val QUICK_RETRY_S = 10L

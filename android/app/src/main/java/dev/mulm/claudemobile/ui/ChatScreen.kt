@@ -2,6 +2,18 @@ package dev.mulm.claudemobile.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -127,7 +139,6 @@ fun ChatScreen(sid: String) {
     val session = sessions.firstOrNull { it.id == sid }
     val allItems by bridge.items.collectAsState()
     val items = allItems[sid].orEmpty()
-    val screen by bridge.screen.collectAsState()
     val conn by bridge.conn.collectAsState()
     var showTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -230,26 +241,20 @@ fun ChatScreen(sid: String) {
                     },
                     actions = {
                         // Kept to icons so the title keeps its room; GitHub lives in the ⋮ menu.
-                        if (session?.status == "working") {
-                            Surface(
-                                onClick = { act { bridge.keys(sid, "esc") } },
-                                shape = RoundedCornerShape(50), color = c.surface,
-                                border = BorderStroke(1.dp, c.borderStrong),
-                                modifier = Modifier.size(34.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(StopIcon, "Stop", Modifier.size(13.dp), tint = c.text)
+                        AnimatedVisibility(
+                            visible = session?.status == "working",
+                            enter = fadeIn() + scaleIn(initialScale = 0.7f) + expandHorizontally(expandFrom = Alignment.End),
+                            exit = fadeOut() + scaleOut(targetScale = 0.7f) + shrinkHorizontally(shrinkTowards = Alignment.End),
+                        ) {
+                            Row {
+                                HeaderButton(onClick = { act { bridge.keys(sid, "esc") } }, tint = c.danger, active = true, pulse = true) {
+                                    Icon(StopIcon, "Stop", Modifier.size(12.dp), tint = c.danger)
                                 }
+                                Spacer(Modifier.width(8.dp))
                             }
                         }
-                        IconButton(onClick = { showTerminal = !showTerminal }) {
-                            Box(
-                                Modifier.size(34.dp).clip(RoundedCornerShape(9.dp))
-                                    .background(if (showTerminal) c.bubble else Color.Transparent),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(TerminalIcon, "Terminal", Modifier.size(20.dp), tint = if (showTerminal) c.text else c.muted)
-                            }
+                        HeaderButton(onClick = { showTerminal = !showTerminal }, tint = c.accentButton, active = showTerminal) {
+                            Icon(TerminalIcon, "Terminal", Modifier.size(19.dp), tint = if (showTerminal) c.accentButton else c.muted)
                         }
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
@@ -268,6 +273,9 @@ fun ChatScreen(sid: String) {
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             Column(Modifier.background(c.bg).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
+                // Read here, not at the top: the screen changes several times a second while
+                // Claude works, and only this part of the chat shows it.
+                val screen by bridge.screen.collectAsState()
                 val sc = screen?.takeIf { it.sid == sid }
                 AnimatedVisibility(visible = showTerminal) {
                     TerminalPanel(sc) { keys -> act { bridge.keys(sid, *keys) } }
@@ -330,6 +338,28 @@ fun ChatScreen(sid: String) {
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel", color = c.muted) } },
         )
+    }
+}
+
+/**
+ * The chat header's round-cornered icon buttons: tinted while active (terminal open, Stop),
+ * outlined otherwise; [pulse] breathes the border while Claude works.
+ */
+@Composable
+private fun HeaderButton(onClick: () -> Unit, tint: Color, active: Boolean, pulse: Boolean = false, content: @Composable () -> Unit) {
+    val c = Claude.colors
+    val fill by animateColorAsState(if (active) tint.copy(alpha = if (c.dark) 0.20f else 0.12f) else c.surface, label = "fill")
+    val edge by animateColorAsState(if (active) tint.copy(alpha = 0.45f) else c.border, label = "edge")
+    val breath = if (pulse) {
+        val t = rememberInfiniteTransition(label = "pulse")
+        t.animateFloat(0.35f, 0.9f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "pulse").value
+    } else 1f
+    Surface(
+        onClick = onClick, shape = RoundedCornerShape(12.dp), color = fill,
+        border = BorderStroke(1.dp, if (pulse) edge.copy(alpha = edge.alpha * breath) else edge),
+        modifier = Modifier.size(38.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) { content() }
     }
 }
 
@@ -727,46 +757,6 @@ private fun MenuPanel(session: SessionInfo?, sc: ScreenState?, onSelect: (Int) -
             }
             TextButton(onClick = onEsc, modifier = Modifier.align(Alignment.End)) {
                 Text("Esc · cancel", color = c.muted, fontSize = 13.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit) {
-    val c = Claude.colors
-    val v = rememberScrollState()
-    LaunchedEffect(sc?.lines) { v.scrollTo(v.maxValue) }
-    Surface(
-        color = c.terminalBg, contentColor = c.terminalText, shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
-    ) {
-        Column {
-            Box(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(v).horizontalScroll(rememberScrollState())) {
-                Text(
-                    sc?.lines?.joinToString("\n") ?: "Loading screen…",
-                    fontFamily = FontFamily.Monospace, fontSize = 10.sp, lineHeight = 12.sp,
-                    softWrap = false, modifier = Modifier.padding(12.dp),
-                )
-            }
-            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                val keys = listOf(
-                    "Esc" to "esc", "Enter" to "enter", "↑" to "up", "↓" to "down", "←" to "left", "→" to "right",
-                    "Tab" to "tab", "⇧Tab" to "shift-tab", "1" to "1", "2" to "2", "3" to "3", "^C" to "ctrl-c",
-                )
-                keys.forEach { (label, key) ->
-                    Surface(
-                        onClick = { onKeys(arrayOf(key)) }, shape = RoundedCornerShape(8.dp),
-                        color = Color.White.copy(alpha = 0.06f), border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                    ) {
-                        Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = c.terminalText,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
-                    }
-                }
             }
         }
     }

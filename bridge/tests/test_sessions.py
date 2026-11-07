@@ -678,6 +678,23 @@ async def test_subscribed_phones_get_chat_items(api, bridge, wrappers, conv):
     await ws.close()
 
 
+async def test_a_long_chat_arrives_newest_first(api, bridge, wrappers, conv, monkeypatch):
+    monkeypatch.setattr(server, "SNAPSHOT_FIRST", 3)
+    for n in range(7):
+        conv.write(conv.assistant(conv.text(f"reply {n}")))
+    w = await wrappers("w1")
+    bridge.attach_transcript(w.session, conv.path, SID)
+    ws = await api.ws_connect("/api/ws")
+    await ws.receive_json()
+    await ws.receive_json()
+    await ws.send_json({"t": "sub", "sid": "w1"})
+    first = await ws.receive_json()
+    assert first["reset"] is True and [i["text"] for i in first["items"]] == ["reply 4", "reply 5", "reply 6"]
+    rest = await ws.receive_json()
+    assert rest["reset"] is False and [i["text"] for i in rest["items"]] == ["start"] + [f"reply {n}" for n in range(4)]
+    await ws.close()
+
+
 # ---- Claude Code's own session registry, and restarts -------------------------------------------------
 async def test_session_file_fills_in_id_name_and_status(bridge, wrappers, conv, sandbox):
     pid = 2**22 + 99
