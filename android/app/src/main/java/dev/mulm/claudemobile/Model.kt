@@ -214,3 +214,20 @@ data class Project(val cwd: String, val name: String, val path: String, val upda
         }
     }
 }
+
+
+// ---- back to JSON, in the bridge's format (ChatCache stores what the bridge sent) ----------
+internal fun Question.toJson(): JSONObject = JSONObject().put("question", question).put("header", header)
+    .put("multiSelect", multiSelect)
+    .put("options", JSONArray(options.map { JSONObject().put("label", it.label).put("description", it.description) }))
+
+internal fun Item.toJson(): JSONObject = JSONObject().put("id", id).put("seq", seq).put("kind", kind).put("text", text)
+    .put("name", name).put("summary", summary).put("detail", detail).put("result", result).put("status", status)
+    .put("questions", JSONArray(questions.map { it.toJson() })).put("diff", JSONArray(diff))
+    .put("add", added).put("del", removed).put("image", image)
+
+internal fun SessionInfo.toJson(): JSONObject = JSONObject().put("id", id).put("title", title).put("project", project)
+    .put("cwd", cwd).put("status", status).put("detail", detail).put("status_since", statusSince).put("updated", updated)
+    .put("started", started).put("last_text", lastText).put("connected", connected)
+    .put("questions", JSONArray(questions.map { it.toJson() })).put("question_id", questionId)
+    .put("context", context).put("context_max", contextMax).put("repo", repo ?: JSONObject.NULL)

@@ -105,6 +105,10 @@ with push notifications when a session finishes, needs permission, or asks a que
   was already answered. Finished ones have an inline Reply. They're muted while you're
   typing into that session at the laptop (`quiet_after_local_input` in
   `~/.config/claude-mobile/config.json`, default 45 s).
+* **Offline**: the app keeps the last session list and each chat's last 200 items on the
+  phone (`filesDir/chats`, written a few seconds after changes, dropped after 14 days). On start
+  and while the laptop is asleep, off or unreachable it shows them, read-only and marked
+  offline, until the bridge sends the live state.
 * **Home-screen widget** ("Claude sessions", 4×2, resizable): sessions that need you first,
   then the most recent, each opening its chat; **+** opens New session. The background
   service redraws it as sessions change (at most once a second; the widget never polls or

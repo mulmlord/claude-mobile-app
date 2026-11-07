@@ -61,7 +61,8 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     val tailscaleDown: StateFlow<Boolean> = _tailscaleDown
     private val _host = MutableStateFlow("")
     val host: StateFlow<String> = _host
-    private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
+    // The last list the phone saw, until the bridge sends the live one (see ChatCache).
+    private val _sessions = MutableStateFlow(ChatCache.sessions())
     val sessions: StateFlow<List<SessionInfo>> = _sessions
     private val _items = MutableStateFlow<Map<String, List<Item>>>(emptyMap())
     val items: StateFlow<Map<String, List<Item>>> = _items
@@ -373,6 +374,7 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
                 "sessions" -> {
                     val a = o.optJSONArray("sessions") ?: JSONArray()
                     _sessions.value = (0 until a.length()).map { SessionInfo.from(a.getJSONObject(it)) }
+                    ChatCache.saveSessions(_sessions.value)
                     _awake.value = o.optBoolean("awake")
                     if (o.has("keep_awake")) _keepAwake.value = o.optString("keep_awake")
                 }
@@ -464,12 +466,23 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
                 byId.values.sortedBy { it.seq }
             }
             _items.value = current + (sid to merged.takeLast(600))
+            ChatCache.saveItems(sid, merged)
         }
     }
 
     // ---- subscriptions ---------------------------------------------------------
     fun subscribe(sid: String?) {
         sub = sid
+        // Opened without anything in memory (app just started, laptop out of reach): the saved
+        // copy, until the bridge's snapshot replaces it.
+        if (sid != null && _items.value[sid].isNullOrEmpty()) {
+            scope.launch {
+                val saved = ChatCache.items(sid)
+                if (saved.isNotEmpty()) synchronized(lock) {
+                    if (_items.value[sid].isNullOrEmpty()) _items.value = _items.value + (sid to saved)
+                }
+            }
+        }
         ws?.send(JSONObject().put("t", "sub").put("sid", sid ?: JSONObject.NULL).toString())
     }
 

@@ -19,6 +19,7 @@ class App : Application() {
         instance = this
         ConnLog.init(this)
         ConnLog.info("App started · " + (runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"))
+        ChatCache.init(this)
         prefs = Prefs(this)
         bridge = BridgeClient(this, prefs)
         Notifier.createChannels(this)
