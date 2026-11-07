@@ -2,6 +2,7 @@
 small hardening fixes the test suite and review turned up."""
 
 import asyncio
+import time
 
 import pytest
 
@@ -194,3 +195,62 @@ async def test_a_message_only_goes_with_no(api, wrappers):
 
 def test_ws_heartbeat_tolerates_a_sleeping_phone():
     assert server.WS_HEARTBEAT >= 90  # the phone gets WS_HEARTBEAT / 2 to answer a ping
+
+
+# ---- repainting the session's screen ---------------------------------------------------------
+import fcntl
+import os
+import struct
+import termios
+
+
+def winsize(fd):
+    return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+
+
+@pytest.fixture
+def pty(monkeypatch):
+    master, slave = os.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    monkeypatch.setattr(server.Bridge, "session_tty", lambda self, s: os.ttyname(slave))
+    yield slave
+    os.close(master)
+    os.close(slave)
+
+
+async def test_redraw_shrinks_the_terminal_a_row_and_restores_it(api, wrappers, pty, fast):
+    during = []
+    fast.on_sleep.append(lambda d: during.append(winsize(pty)) if d == server.REDRAW_PAUSE else None)
+    w = await wrappers("w1")
+    r = await api.post("/api/sessions/w1/redraw")
+    assert r.status == 200 and (await r.json())["ok"] is True
+    assert during == [(39, 120)] and winsize(pty) == (40, 120)
+
+
+async def test_redraw_keeps_a_resize_that_happened_meanwhile(api, wrappers, pty, fast):
+    def laptop_resizes(d):
+        if d == server.REDRAW_PAUSE:
+            fcntl.ioctl(pty, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 100, 0, 0))
+    fast.on_sleep.append(laptop_resizes)
+    w = await wrappers("w1")
+    await api.post("/api/sessions/w1/redraw")
+    assert winsize(pty) == (50, 100)
+
+
+async def test_redraw_without_a_terminal_says_so(api, wrappers, monkeypatch):
+    monkeypatch.setattr(server.Bridge, "session_tty", lambda self, s: "/nonexistent/tty")
+    w = await wrappers("w1")
+    r = await api.post("/api/sessions/w1/redraw")
+    assert r.status == 200 and (await r.json())["ok"] is False
+
+
+async def test_a_wrapper_reconnecting_later_gets_a_repaint(bridge, wrappers, pty, monkeypatch):
+    calls = []
+    async def fake(self, s, delay=0.0):
+        calls.append(s.id)
+    monkeypatch.setattr(server.Bridge, "redraw", fake)
+    w = await wrappers("w1")  # just started: everything it draws reaches the bridge
+    await asyncio.sleep(0.05)
+    assert calls == []
+    w2 = await wrappers("w2", started=time.time() - 60)  # running for a minute already
+    await until(lambda: calls == ["w2"], what="a repaint")

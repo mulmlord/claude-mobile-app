@@ -62,7 +62,12 @@ with push notifications when a session finishes, needs permission, or asks a que
   live terminal plus Esc/arrows/Enter for anything else: in the laptop's colours (the bridge
   sends style runs from pyte; the app maps the 16 ANSI colours to a warm palette), wrapped to
   the phone's width, with prompt-box side walls removed, rules drawn as hairlines and long
-  runs of padding shrunk. Opening a chat sends its newest 60 items first, the rest right after.
+  runs of padding shrunk; the status lines under the prompt box keep one row each (one font
+  size, shrunk to fit), and symbols the phone's fonts lack get stand-ins (⏵ → ▸). Claude Code
+  only redraws what changes, so when a wrapper connects to a bridge that wasn't there from
+  the start, the bridge has it repaint (the session's terminal a row shorter for half a
+  second, then back: a resize); `↻ Redraw` in the view does the same on demand. Opening a
+  chat sends its newest 60 items first, the rest right after.
 * **New sessions from the phone.** "New session" lists the folders Claude Code has run in
   (from `~/.claude/projects`), newest first. Start a fresh session there or resume a recent
   one: the bridge opens a normal terminal window on the laptop (via `uwsm-app`, so it
@@ -163,7 +168,7 @@ Logs: `journalctl --user -u claude-mobile-bridge -f`
 `POST /api/sessions/{id}/send {"text"}`, `POST …/keys {"keys":["esc","enter","up",…]}`,
 `POST …/select {"index"}`, `POST …/answer {"choice":"yes|always|no", "dh"?, "message"?}` (with `no`: typed in as the next turn once the prompt closes),
 `POST …/choose {"label", "qid"?}` (dialog option by label; 409 if none matches or question `qid` is gone),
-`POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
+`POST …/redraw` (have Claude Code repaint its screen), `POST …/end {"force"?: bool}`, `POST …/rename {"name"}` (409 when the session isn't connected
 or a dialog is open),
 WebSocket `/api/ws` (`notify` events: `id, sid, kind, title, body`, plus `tool` {`name, summary,
 detail` or `diff, add, del`} on permission and `qid, options` on questions),

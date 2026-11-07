@@ -278,7 +278,7 @@ fun ChatScreen(sid: String) {
                 val screen by bridge.screen.collectAsState()
                 val sc = screen?.takeIf { it.sid == sid }
                 AnimatedVisibility(visible = showTerminal) {
-                    TerminalPanel(sc) { keys -> act { bridge.keys(sid, *keys) } }
+                    TerminalPanel(sc, onKeys = { keys -> act { bridge.keys(sid, *keys) } }, onRedraw = { act { bridge.redraw(sid) } })
                 }
                 if (needsYou || (sc != null && sc.options.isNotEmpty())) {
                     MenuPanel(session, sc,

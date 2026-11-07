@@ -522,6 +522,9 @@ class BridgeClient(private val ctx: Context, private val prefs: Prefs) {
     suspend fun endSession(sid: String, force: Boolean = false) =
         call("/api/sessions/$sid/end", JSONObject().put("force", force))
 
+    /** Has Claude Code repaint its screen, for a terminal view that misses parts drawn earlier. */
+    suspend fun redraw(sid: String) = call("/api/sessions/$sid/redraw", JSONObject())
+
     /** Types /rename; the new title comes back with the next sessions update. */
     suspend fun rename(sid: String, name: String) = call("/api/sessions/$sid/rename", JSONObject().put("name", name))
 

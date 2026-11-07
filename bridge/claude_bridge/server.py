@@ -17,12 +17,14 @@ import hashlib
 import hmac
 import json
 import logging
+import fcntl
 import os
 import re
 import secrets
 import signal
 import socket
 import struct
+import termios
 import time
 
 from aiohttp import WSMsgType, web
@@ -53,6 +55,8 @@ ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 RENAME_MAX = 80
 FORCE_KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL on "Force quit"
 WS_HEARTBEAT = 120  # seconds between pings to a quiet phone; it gets half that to answer
+REDRAW_AFTER = 5.0  # a wrapper connecting this long after its claude started gets a repaint
+REDRAW_PAUSE = 0.5  # seconds the terminal is a row shorter while forcing that repaint
 SNAPSHOT_FIRST = 60  # items sent first when the phone opens a chat; the rest right after
 MESSAGE_WAIT = 5.0  # seconds a "deny and tell Claude" waits for the prompt to close
 
@@ -300,6 +304,7 @@ class Bridge:
         self.awake = launcher.Awake(cfg)
         self.spawns: dict[str, asyncio.Future] = {}
         self.app_cache: tuple | None = None  # (metadata mtimes, info, apk path)
+        self.tasks: set[asyncio.Task] = set()  # fire-and-forget work (repaints), kept from GC
         try:
             with open(STATE_FILE) as f:
                 self.saved_state = json.load(f)
@@ -389,6 +394,47 @@ class Bridge:
                 else:
                     self.dirty = True
 
+    def background(self, coro):
+        t = asyncio.ensure_future(coro)
+        self.tasks.add(t)
+        t.add_done_callback(self.tasks.discard)
+
+    def session_tty(self, s: Session) -> str:
+        """The terminal claude itself runs in (the wrapper's PTY), through its stdin."""
+        return f"/proc/{s.pid}/fd/0"
+
+    async def redraw(self, s: Session, delay: float = 0.0) -> bool:
+        """Make Claude Code repaint its whole screen. It only redraws what changed, so what it
+        drew before the bridge connected (most of the status line, the prompt box) would never
+        reach the phone. A terminal a row shorter for a moment, then back, is a resize to it,
+        and a resize repaints everything, as when the window on the laptop is resized."""
+        if delay:
+            await asyncio.sleep(delay)
+        if not s.pid or s.exited:
+            return False
+        try:
+            fd = os.open(self.session_tty(s), os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        except OSError:
+            return False
+        try:
+            if not os.isatty(fd):
+                return False
+            size = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
+            rows, cols, xpix, ypix = struct.unpack("HHHH", size)
+            if rows < 3:
+                return False
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows - 1, cols, xpix, ypix))
+            await asyncio.sleep(REDRAW_PAUSE)
+            # Put the size back unless the laptop's window was resized meanwhile (the wrapper set it).
+            if struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2] == (rows - 1, cols):
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
+            log.info("repainted %s", s.id)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
     def register(self, hello: dict, writer) -> Session:
         sid = hello["id"]
         s = self.sessions.get(sid)
@@ -407,6 +453,10 @@ class Bridge:
             s.screen.reset()
             s.screen.resize(hello.get("rows", 40), hello.get("cols", 120))
         s.writer = writer
+        if time.time() - s.started > REDRAW_AFTER:
+            # The bridge restarted, or started after this session: the replayed output only
+            # covers the last part of the session, so have Claude Code paint the whole screen.
+            self.background(self.redraw(s, delay=1.0))
         fut = self.spawns.pop(hello.get("spawn") or "", None)
         if fut and not fut.done():
             fut.set_result(sid)
@@ -796,6 +846,13 @@ class Bridge:
         picked = await self.select_option(s, opt["index"])
         return web.json_response({"ok": True, "picked": picked})
 
+    async def api_redraw(self, request):
+        """The phone's terminal view looks incomplete: have Claude Code repaint (see redraw)."""
+        s = self.get_session(request)
+        if not s.writer:
+            raise web.HTTPConflict(text="This session isn't connected")
+        return web.json_response({"ok": await self.redraw(s)})
+
     async def api_answer(self, request):
         """Answer a permission dialog by meaning: choice = yes | always | no. With choice no,
         an optional message is what Claude should do instead; it is typed in as the next turn
@@ -1127,6 +1184,7 @@ def make_app(bridge: Bridge) -> web.Application:
     app.router.add_post("/api/sessions/{sid}/upload", bridge.api_upload)
     app.router.add_post("/api/sessions/{sid}/end", bridge.api_end)
     app.router.add_post("/api/sessions/{sid}/rename", bridge.api_rename)
+    app.router.add_post("/api/sessions/{sid}/redraw", bridge.api_redraw)
     app.router.add_get("/api/ws", bridge.api_ws)
     app.router.add_get("/api/projects", bridge.api_projects)
     bridge.github.routes(app)

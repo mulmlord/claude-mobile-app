@@ -4,7 +4,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,11 +31,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -71,9 +76,37 @@ private object TermPalette {
 }
 
 private sealed interface TermBlock {
-    data class Text(val text: AnnotatedString) : TermBlock
+    /** [fit]: the status lines under the prompt box, each shrunk to one row like on the laptop. */
+    data class Text(val text: AnnotatedString, val fit: Boolean = false) : TermBlock
     /** A full-width ─── line: drawn as a hairline instead of wrapping into rows of dashes. */
     data class Rule(val color: Color) : TermBlock
+}
+
+/**
+ * Stand-ins for symbols Claude Code draws that the phone's fonts may lack (they'd show as
+ * empty boxes): the media-control triangles of "⏵⏵ auto mode on", "⏸ plan mode", the ⏺ bullet.
+ */
+private val STAND_INS = mapOf(
+    '⏵' to "▸", '⏴' to "◂", '⏶' to "▴", '⏷' to "▾", '⏸' to "‖", '⏹' to "■", '⏺' to "●",
+    '⏻' to "●", '⏼' to "●", '⏽' to "|", '⏯' to "▸", '⏭' to "»", '⏮' to "«", '⏩' to "»", '⏪' to "«",
+)
+private val glyphPaint by lazy { android.graphics.Paint().apply { typeface = android.graphics.Typeface.MONOSPACE } }
+private val drawable = HashMap<Int, Boolean>()
+
+/** [t] with characters no font on this phone can draw swapped for a stand-in. */
+private fun drawableText(t: String): String {
+    if (t.all { it.code < 0x2300 }) return t
+    val sb = StringBuilder(t.length)
+    var i = 0
+    while (i < t.length) {
+        val cp = t.codePointAt(i)
+        val n = Character.charCount(cp)
+        val ok = cp < 0x2300 || drawable.getOrPut(cp) { glyphPaint.hasGlyph(String(Character.toChars(cp))) }
+        val sub = if (ok) null else STAND_INS[t[i]]
+        if (sub != null) sb.append(sub) else sb.append(t, i, i + n)
+        i += n
+    }
+    return sb.toString()
 }
 
 private const val BOX_CHARS = "─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼╞╡│┃ "
@@ -145,7 +178,8 @@ private fun blocks(sc: ScreenState): List<TermBlock> {
         out += TermBlock.Text(buildAnnotatedString {
             cur.forEachIndexed { i, segs ->
                 if (i > 0) append('\n')
-                for ((t, st) in segs) {
+                for ((raw, st) in segs) {
+                    val t = drawableText(raw)
                     val span = spanFor(st)
                     if (span == null) append(t) else { pushStyle(span); append(t); pop() }
                 }
@@ -185,7 +219,43 @@ private fun blocks(sc: ScreenState): List<TermBlock> {
         cur += row
     }
     flush()
+    // Everything after the last rule is the status area (status line, mode hints).
+    val lastRule = out.indexOfLast { it is TermBlock.Rule }
+    if (lastRule >= 0) {
+        for (k in lastRule + 1 until out.size) (out[k] as? TermBlock.Text)?.let { out[k] = it.copy(fit = true) }
+    }
     return out
+}
+
+/**
+ * The status lines under the prompt box, like on the laptop: one row each, all in the same
+ * size, shrunk (down to 7 sp) until the longest fits; only beyond that would one wrap. The
+ * indentation they all share goes, their alignment to each other stays.
+ */
+@Composable
+private fun FitBlock(text: AnnotatedString, style: TextStyle) {
+    val lines = remember(text) {
+        val all = ArrayList<AnnotatedString>()
+        var at = 0
+        while (at <= text.length) {
+            val end = text.indexOf('\n', at).let { if (it < 0) text.length else it }
+            all += text.subSequence(at, end)
+            at = end + 1
+        }
+        val indent = all.filter { it.isNotBlank() }.minOfOrNull { l -> l.indexOfFirst { it != ' ' }.coerceAtLeast(0) } ?: 0
+        all.map { if (it.length >= indent) it.subSequence(indent, it.length) else it }
+    }
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val maxPx = constraints.maxWidth
+        val size = remember(lines, maxPx) {
+            val widest = lines.maxOfOrNull { measurer.measure(it, style, softWrap = false, maxLines = 1).size.width } ?: 0
+            if (widest <= maxPx || widest == 0) style.fontSize
+            else (style.fontSize.value * maxPx / widest * 0.97f).coerceAtLeast(7f).sp
+        }
+        val fitted = style.copy(fontSize = size, lineHeight = (size.value * 1.4f).sp)
+        Column { for (l in lines) Text(l, style = fitted, softWrap = true) }
+    }
 }
 
 private fun spanFor(st: TermStyle): SpanStyle? {
@@ -215,7 +285,7 @@ private fun spanFor(st: TermStyle): SpanStyle? {
 }
 
 @Composable
-internal fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit) {
+internal fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit, onRedraw: () -> Unit) {
     val c = Claude.colors
     val v = rememberScrollState()
     val content = remember(sc) { sc?.let { blocks(it) } }
@@ -241,17 +311,26 @@ internal fun TerminalPanel(sc: ScreenState?, onKeys: (Array<String>) -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Text("Laptop terminal", fontSize = 12.sp, color = TermPalette.faint, modifier = Modifier.weight(1f))
                 if (sc != null) Text("${sc.cols} cols", fontSize = 11.sp, color = TermPalette.faint, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.width(6.dp))
+                // Claude Code only redraws what changes: if parts look missing, have it repaint.
+                Text(
+                    "↻ Redraw", fontSize = 12.sp, color = TermPalette.fg.copy(alpha = 0.8f),
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onRedraw)
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
             }
             Box(Modifier.fillMaxWidth().heightIn(max = 300.dp).verticalScroll(v)) {
                 if (content == null) {
                     Text("Loading screen…", fontSize = 12.sp, color = TermPalette.faint, modifier = Modifier.padding(14.dp))
                 } else {
                     Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.5.sp, lineHeight = 15.5.sp, color = TermPalette.fg)
                         for (b in content) when (b) {
-                            is TermBlock.Text -> Text(
-                                b.text, fontFamily = FontFamily.Monospace, fontSize = 11.5.sp, lineHeight = 15.5.sp,
-                                color = TermPalette.fg, softWrap = true,
-                            )
+                            is TermBlock.Text -> if (b.fit) {
+                                FitBlock(b.text, style)
+                            } else {
+                                Text(b.text, style = style, softWrap = true)
+                            }
                             is TermBlock.Rule -> Box(
                                 Modifier.fillMaxWidth().padding(vertical = 3.dp).height(1.dp).background(b.color.copy(alpha = 0.45f)),
                             )
