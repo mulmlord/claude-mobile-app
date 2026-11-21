@@ -196,6 +196,14 @@ def main():
     if not should_wrap(argv):
         os.execvp(claude, [claude] + argv)
 
+    # In a herdr pane this wrapper, not claude, is the pane's foreground process,
+    # so herdr would not recognise the session as Claude Code. HERDR_AGENT=claude
+    # in the wrapper's own environment (herdr reads it from /proc) tells it to;
+    # re-exec once to get it there. The claude underneath does not inherit it.
+    if os.environ.get("HERDR_PANE_ID") and os.environ.get("HERDR_AGENT") != "claude":
+        me = os.path.realpath(__file__)
+        os.execve(sys.executable, [sys.executable, "-I", me] + argv, dict(os.environ, HERDR_AGENT="claude"))
+
     wid = uuid.uuid4().hex[:12]
     stdin_fd, stdout_fd = 0, 1
     ws = get_winsize(stdin_fd)
@@ -223,6 +231,7 @@ def main():
                 os.close(slave)
             env = dict(os.environ, CLAUDE_MOBILE_ID=wid, CLAUDE_MOBILE_PID=str(os.getpid()))
             env.pop("CLAUDE_MOBILE_SPAWN", None)
+            env.pop("HERDR_AGENT", None)
             os.execvpe(claude, [claude] + argv, env)
         except BaseException:
             os._exit(127)
