@@ -208,3 +208,7 @@ The service runs from its own environment (`~/.local/share/claude-mobile/venv`, 
 `gh`, `git`, terminals and `systemd-inhibit` are faked, and the wrapper protocol is driven
 by a fake wrapper over a real unix socket. It never touches the running bridge,
 `~/.claude` or `~/.config`.
+
+## License
+
+MIT
